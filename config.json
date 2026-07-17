@@ -2,9 +2,9 @@
   "file1Name": "추정자료-1.xlsx",
   "file1Path": "d:\\BNS_Asset\\추정자료-1.xlsx",
   "key1": "제조사번호",
-  "file2Name": "아이몬.xlsx",
-  "file2Path": "d:\\BNS_Asset\\아이몬.xlsx",
-  "key2": "제조번호",
+  "file2Name": "실사.xlsx",
+  "file2Path": "d:\\BNS_Asset\\실사.xlsx",
+  "key2": "SN",
   "file3Name": "렌탈사현황.xlsx",
   "file3Path": "d:\\BNS_Asset\\렌탈사현황.xlsx",
   "key3": "제조번호"

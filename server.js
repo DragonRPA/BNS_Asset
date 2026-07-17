@@ -252,7 +252,7 @@ app.post('/api/compare', async (req, res) => {
       dept: row['부서'] || row['소속'] || "",
       workplace: row['사업장'] || "",
       device: row['지급기기'] || row['구분'] || row['기기'] || "",
-      model: row['상세모델'] || row['모델명'] || row['모델'] || "",
+      model: row['관리모델'] || row['상세모델'] || row['모델명'] || row['모델'] || "",
       serial: String(row[key1] || "").trim(),
       cleanSerial: cleanSerial(row[key1]),
       originalRow: row
@@ -675,6 +675,92 @@ app.post('/api/save', async (req, res) => {
 });
 
 // ============================================================
+// 시리얼없음 초기 데이터 조회 API
+// ============================================================
+app.get('/api/serialless-initial', async (req, res) => {
+  const config = readConfig();
+  const f1Path = fs.existsSync(config.file1Path) ? config.file1Path : FILE1_PATH;
+  const f2Path = fs.existsSync(config.file2Path) ? config.file2Path : FILE2_PATH;
+
+  if (!fs.existsSync(f1Path) || !fs.existsSync(f2Path)) {
+    return res.json({ hasData: false });
+  }
+
+  try {
+    const wb1 = XLSX.readFile(f1Path);
+    const rows1 = XLSX.utils.sheet_to_json(wb1.Sheets[wb1.SheetNames[0]], { defval: "" });
+    const wb2 = XLSX.readFile(f2Path);
+    const rows2 = XLSX.utils.sheet_to_json(wb2.Sheets[wb2.SheetNames[0]], { defval: "" });
+
+    const k1 = req.query.key1 || config.key1;
+    const k2 = req.query.key2 || config.key2;
+
+    const billingData = rows1.map((row, idx) => ({
+      _id: `b_${idx}`,
+      model: String(row['관리모델'] || row['상세모델'] || row['모델명'] || row['모델'] || ""),
+      serial: String(row[k1] || "").trim(),
+      cleanSerial: cleanSerial(row[k1])
+    }));
+
+    const actualData = rows2.map((row, idx) => ({
+      _id: `a_${idx}`,
+      model: String(row['상세모델'] || row['모델명'] || row['모델'] || ""),
+      serial: String(row[k2] || "").trim(),
+      cleanSerial: cleanSerial(row[k2])
+    }));
+
+    const exactBillingIds = new Set();
+    const exactActualIds = new Set();
+    
+    const actualMap = new Map();
+    actualData.forEach(row => {
+      if (row.cleanSerial) {
+        if (!actualMap.has(row.cleanSerial)) actualMap.set(row.cleanSerial, []);
+        actualMap.get(row.cleanSerial).push(row);
+      }
+    });
+
+    billingData.forEach(bRow => {
+      if (bRow.cleanSerial && actualMap.has(bRow.cleanSerial)) {
+        const matched = actualMap.get(bRow.cleanSerial).find(a => !exactActualIds.has(a._id));
+        if (matched) {
+          exactBillingIds.add(bRow._id);
+          exactActualIds.add(matched._id);
+        }
+      }
+    });
+
+    const unmatchedB = billingData.filter(b => !exactBillingIds.has(b._id));
+    const unmatchedA = actualData.filter(a => !exactActualIds.has(a._id));
+
+    // Filter billing models based on manufacturing serial search query
+    let filteredB = unmatchedB;
+    if (req.query.billingSerial) {
+      const search = req.query.billingSerial.trim().toUpperCase();
+      filteredB = filteredB.filter(b => b.serial.toUpperCase().includes(search));
+    }
+
+    const billingModels = [...new Set(filteredB.map(b => b.model).filter(Boolean))];
+    const actualModels = [...new Set(unmatchedA.map(a => a.model).filter(Boolean))];
+
+    res.json({
+      hasData: true,
+      models: {
+        billing: billingModels,
+        actual: actualModels
+      },
+      counts: {
+        billing: filteredB.length,
+        actual: unmatchedA.length
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // 시리얼없음 매칭 API
 // ============================================================
 app.post('/api/match-serialless', async (req, res) => {
@@ -704,12 +790,12 @@ app.post('/api/match-serialless', async (req, res) => {
 
     const billingData = rows1.map((row, idx) => ({
       _id: `b_${idx}`, idx: idx + 2,
-      name: row['이름'] || row['사용자'] || row['성명'] || "",
-      empId: row['사번'] || row['사원번호'] || "",
-      dept: row['부서'] || row['소속'] || "",
-      workplace: row['사업장'] || "",
-      device: row['지급기기'] || row['구분'] || row['기기'] || "",
-      model: row['상세모델'] || row['모델명'] || row['모델'] || "",
+      name: String(row['이름'] || row['사용자'] || row['성명'] || ""),
+      empId: String(row['사번'] || row['사원번호'] || ""),
+      dept: String(row['부서'] || row['소속'] || ""),
+      workplace: String(row['사업장'] || ""),
+      device: String(row['지급기기'] || row['구분'] || row['기기'] || ""),
+      model: String(row['관리모델'] || row['상세모델'] || row['모델명'] || row['모델'] || ""),
       serial: String(row[key1 || config.key1] || "").trim(),
       cleanSerial: cleanSerial(row[key1 || config.key1]),
       originalRow: row
@@ -717,12 +803,12 @@ app.post('/api/match-serialless', async (req, res) => {
 
     const actualData = rows2.map((row, idx) => ({
       _id: `a_${idx}`, idx: idx + 2,
-      name: row['이름'] || row['사용자'] || row['성명'] || "",
-      empId: row['사번'] || row['사원번호'] || "",
-      dept: row['부서'] || row['소속'] || "",
-      workplace: row['사업장'] || "",
-      device: row['구분'] || row['지급기기'] || row['기기'] || "",
-      model: row['상세모델'] || row['모델명'] || row['모델'] || "",
+      name: String(row['이름'] || row['사용자'] || row['성명'] || ""),
+      empId: String(row['사번'] || row['사원번호'] || ""),
+      dept: String(row['부서'] || row['소속'] || ""),
+      workplace: String(row['사업장'] || ""),
+      device: String(row['구분'] || row['지급기기'] || row['기기'] || ""),
+      model: String(row['상세모델'] || row['모델명'] || row['모델'] || ""),
       serial: String(row[key2 || config.key2] || "").trim(),
       cleanSerial: cleanSerial(row[key2 || config.key2]),
       originalRow: row
@@ -730,10 +816,10 @@ app.post('/api/match-serialless', async (req, res) => {
 
     const rentalData = rows3.map((row, idx) => ({
       _id: `r_${idx}`, idx: idx + 2,
-      name: row['이름'] || row['사용자'] || row['성명'] || "",
-      empId: row['사번'] || row['사원번호'] || "",
-      dept: row['부서'] || row['소속'] || "",
-      workplace: row['사업장'] || "",
+      name: String(row['이름'] || row['사용자'] || row['성명'] || ""),
+      empId: String(row['사번'] || row['사원번호'] || ""),
+      dept: String(row['부서'] || row['소속'] || ""),
+      workplace: String(row['사업장'] || ""),
       serial: String(row[key3 || config.key3] || "").trim(),
       cleanSerial: cleanSerial(row[key3 || config.key3]),
       originalRow: row
@@ -762,9 +848,7 @@ app.post('/api/match-serialless', async (req, res) => {
       }
     });
 
-    let unmatchedB = billingData.filter(b => !exactBillingIds.add(b._id) && !exactBillingIds.has(b._id));
-    // Set add always returns the set itself. We should filter cleanly:
-    unmatchedB = billingData.filter(b => !exactBillingIds.has(b._id));
+    const unmatchedB = billingData.filter(b => !exactBillingIds.has(b._id));
     const unmatchedA = actualData.filter(a => !exactActualIds.has(a._id));
 
     // 렌탈현황 데이터 맵 (빠른 검색용)
@@ -804,98 +888,115 @@ app.post('/api/match-serialless', async (req, res) => {
     const billingModels = [...new Set(unmatchedB.map(b => b.model).filter(Boolean))];
     const actualModels = [...new Set(unmatchedA.map(a => a.model).filter(Boolean))];
 
-    // 필터 적용
+    // 필터 적용 (체크박스 리스트 OR 텍스트박스 키워드 필터링)
     let filteredB = unmatchedB;
-    if (filters.billingModel) {
-      filteredB = filteredB.filter(b => b.model === filters.billingModel);
+    const bChecked = (filters && filters.billingModels) || [];
+    const bKeyword = (filters && filters.billingModelKeyword) ? filters.billingModelKeyword.trim().toUpperCase() : "";
+    if (bChecked.length > 0 || bKeyword !== "") {
+      filteredB = filteredB.filter(b => {
+        const matchesChecked = bChecked.includes(b.model);
+        const matchesKeyword = bKeyword !== "" && b.model.toUpperCase().includes(bKeyword);
+        return matchesChecked || matchesKeyword;
+      });
     }
-    if (filters.billingSerial) {
+
+    if (filters && filters.billingSerial) {
       const search = filters.billingSerial.trim().toUpperCase();
       filteredB = filteredB.filter(b => b.serial.toUpperCase().includes(search));
     }
 
     let filteredA = unmatchedA;
-    if (filters.actualModel) {
-      filteredA = filteredA.filter(a => a.model === filters.actualModel);
+    const aChecked = (filters && filters.actualModels) || [];
+    const aKeyword = (filters && filters.actualModelKeyword) ? filters.actualModelKeyword.trim().toUpperCase() : "";
+    if (aChecked.length > 0 || aKeyword !== "") {
+      filteredA = filteredA.filter(a => {
+        const matchesChecked = aChecked.includes(a.model);
+        const matchesKeyword = aKeyword !== "" && a.model.toUpperCase().includes(aKeyword);
+        return matchesChecked || matchesKeyword;
+      });
     }
 
     // 2. 조건 필터링 기반 1:1 매칭 알고리즘
     const matchedPairs = [];
     const matchedActualIds = new Set();
 
-    filteredB.forEach(bRow => {
-      // "사번이 공백일 때는 모두 true" 룰 적용
-      const hasEmpId = bRow.empId && bRow.empId.trim() !== "";
-      const evalEmpid = hasEmpId ? !!criteria.empid : true;
-      const evalName = hasEmpId ? !!criteria.name : true;
-      const evalDept = hasEmpId ? !!criteria.dept : true;
-      const evalWorkplace = hasEmpId ? !!criteria.workplace : true;
+    const hasAnyCriteria = !!(criteria && (criteria.empid || criteria.name || criteria.dept || criteria.workplace));
 
-      let bestCandidate = null;
-      let highestScore = -1;
+    if (hasAnyCriteria) {
+      filteredB.forEach(bRow => {
+        let bestCandidate = null;
+        let highestScore = -1;
 
-      filteredA.forEach(aRow => {
-        if (matchedActualIds.has(aRow._id)) return;
+        filteredA.forEach(aRow => {
+          if (matchedActualIds.has(aRow._id)) return;
 
-        const empIdMatch = hasEmpId && aRow.empId && compareEmpId(bRow.empId, aRow.empId);
-        const nameMatch = cleanName(bRow.name) === cleanName(aRow.name) && cleanName(bRow.name).length >= 2;
-        const deptMatch = bRow.dept && aRow.dept && bRow.dept.trim() === aRow.dept.trim();
-        const workplaceMatch = bRow.workplace && aRow.workplace && bRow.workplace.trim() === aRow.workplace.trim();
+          const empIdMatch = bRow.empId && aRow.empId && compareEmpId(bRow.empId, aRow.empId);
+          const nameMatch = cleanName(bRow.name) === cleanName(aRow.name) && cleanName(bRow.name).length >= 2;
+          const deptMatch = bRow.dept && aRow.dept && bRow.dept.trim() === aRow.dept.trim();
+          const workplaceMatch = bRow.workplace && aRow.workplace && bRow.workplace.trim() === aRow.workplace.trim();
 
-        // 매칭 가능성 판단 (선택/강제 적용된 조건 중 최소 하나가 맞아야 함)
-        const isMatched = 
-          (evalEmpid && empIdMatch) || 
-          (evalName && nameMatch) || 
-          (evalDept && deptMatch) || 
-          (evalWorkplace && workplaceMatch);
+          // [필수 조건] 체크박스가 true인 기준은 반드시 일치해야 함 (AND 조건)
+          let isMatched = true;
+          if (criteria.empid && !empIdMatch) isMatched = false;
+          if (criteria.name && !nameMatch) isMatched = false;
+          if (criteria.dept && !deptMatch) isMatched = false;
+          if (criteria.workplace && !workplaceMatch) isMatched = false;
 
-        if (isMatched) {
-          // 점수 부여
-          let score = 0;
-          if (empIdMatch) score += 100;
-          if (nameMatch) score += 50;
-          if (deptMatch) score += 20;
-          if (workplaceMatch) score += 10;
+          // 필수 조건(AND) 만족 시, 최적의 유사 후보 결정을 위한 스코어 연산 (체크 여부 무관)
+          if (isMatched) {
+            let score = 0;
+            if (empIdMatch) score += 100;
+            if (nameMatch) score += 50;
+            if (deptMatch) score += 20;
+            if (workplaceMatch) score += 10;
 
-          if (score > highestScore) {
-            highestScore = score;
-            bestCandidate = aRow;
+            if (score > highestScore) {
+              highestScore = score;
+              bestCandidate = aRow;
+            }
           }
+        });
+
+        if (bestCandidate) {
+          matchedActualIds.add(bestCandidate._id);
+          
+          // 각 컬럼별 일치 및 상이 여부 상세 분석
+          const empIdMatch = bRow.empId && bestCandidate.empId && compareEmpId(bRow.empId, bestCandidate.empId);
+          const nameMatch = cleanName(bRow.name) === cleanName(bestCandidate.name) && cleanName(bRow.name).length >= 2;
+          const deptMatch = bRow.dept && bestCandidate.dept && bRow.dept.trim() === bestCandidate.dept.trim();
+          const workplaceMatch = bRow.workplace && bestCandidate.workplace && bRow.workplace.trim() === bestCandidate.workplace.trim();
+
+          const matches = [];
+          const diffs = [];
+
+          if (empIdMatch) matches.push("사번"); else if (bRow.empId || bestCandidate.empId) diffs.push("사번");
+          if (nameMatch) matches.push("이름"); else if (bRow.name || bestCandidate.name) diffs.push("이름");
+          if (deptMatch) matches.push("부서"); else if (bRow.dept || bestCandidate.dept) diffs.push("부서");
+          if (workplaceMatch) matches.push("사업장"); else if (bRow.workplace || bestCandidate.workplace) diffs.push("사업장");
+
+          const confidence = (empIdMatch || nameMatch) ? 'High' : 'Low';
+          
+          let confidenceReason = matches.length > 0 ? `${matches.join('/')} 일치` : "정보 불일치";
+          if (diffs.length > 0) {
+            confidenceReason += ` (${diffs.join('/')} 상이)`;
+          }
+
+          // 렌탈 현황 참조 검사
+          const bRental = checkRentalStatus(bRow.serial);
+          const aRental = checkRentalStatus(bestCandidate.serial);
+
+          matchedPairs.push({
+            billing: bRow,
+            actual: bestCandidate,
+            score: highestScore,
+            confidence,
+            reason: confidenceReason,
+            billingRental: bRental,
+            actualRental: aRental
+          });
         }
       });
-
-      if (bestCandidate) {
-        matchedActualIds.add(bestCandidate._id);
-        
-        // 신뢰도 레이블 지정
-        let confidence = 'Low';
-        let confidenceReason = '부분 정보 일치';
-        if (highestScore >= 150) {
-          confidence = 'High';
-          confidenceReason = '사번 및 이름 일치';
-        } else if (highestScore >= 100) {
-          confidence = 'High';
-          confidenceReason = '사번 일치';
-        } else if (highestScore >= 50) {
-          confidence = 'High';
-          confidenceReason = '이름 일치';
-        }
-
-        // 렌탈 현황 참조 검사 (작업 자체에는 영향이 없어야 함)
-        const bRental = checkRentalStatus(bRow.serial);
-        const aRental = checkRentalStatus(bestCandidate.serial);
-
-        matchedPairs.push({
-          billing: bRow,
-          actual: bestCandidate,
-          score: highestScore,
-          confidence,
-          reason: confidenceReason,
-          billingRental: bRental,
-          actualRental: aRental
-        });
-      }
-    });
+    }
 
     // 매칭에서 선택되지 않은 잔여 데이터
     const finalUnmatchedB = filteredB.filter(b => !matchedPairs.some(p => p.billing._id === b._id));
@@ -934,42 +1035,71 @@ app.post('/api/save-serialless', async (req, res) => {
   }
 
   try {
-    const wb = XLSX.readFile(f1Path);
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    const range = XLSX.utils.decode_range(sheet['!ref']);
-    
+    const ExcelJS = require('exceljs');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(f1Path);
+    const sheet = workbook.worksheets[0];
+
     const targetKey = key1 || config.key1;
     if (!targetKey) {
       return res.status(400).json({ error: '청구자료 비교 기준 컬럼(제조번호)이 설정되지 않았습니다.' });
     }
 
-    // 대상 컬럼 인덱스 찾기
+    // 1. 헤더 행(1번 행)에서 '제조번호'와 '보정이력' 컬럼 위치 파악
+    const headerRow = sheet.getRow(1);
     let serialColIdx = -1;
-    for (let C = range.s.c; C <= range.e.c; ++C) {
-      const cellRef = XLSX.utils.encode_cell({ r: range.s.r, c: C });
-      const cellVal = sheet[cellRef] ? String(sheet[cellRef].v).trim() : '';
+    let historyColIdx = -1;
+    let maxColNum = 1;
+
+    headerRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      const cellVal = cell.value ? String(cell.value).trim() : '';
       if (cellVal === targetKey) {
-        serialColIdx = C;
-        break;
+        serialColIdx = colNum;
       }
-    }
+      if (cellVal === '보정이력') {
+        historyColIdx = colNum;
+      }
+      if (colNum > maxColNum) {
+        maxColNum = colNum;
+      }
+    });
 
     if (serialColIdx === -1) {
       return res.status(400).json({ error: `청구자료에서 '${targetKey}' 컬럼을 찾을 수 없습니다.` });
     }
 
-    // 각 대상 행의 시리얼번호 업데이트
+    // '보정이력' 컬럼이 존재하지 않으면 맨 마지막 열 오른쪽에 새로 생성
+    if (historyColIdx === -1) {
+      historyColIdx = maxColNum + 1;
+      const historyHeaderCell = headerRow.getCell(historyColIdx);
+      historyHeaderCell.value = '보정이력';
+      historyHeaderCell.font = { name: '맑은 고딕', size: 11, bold: true };
+      historyHeaderCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    }
+
+    // 2. 각 매칭 자산 보정값 및 수정이력(타임스탬프) 반영
+    const nowStr = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+
     updates.forEach(upd => {
-      const rIdx = upd.billingIdx - 1; // 1-based index to 0-based index
-      const cellRef = XLSX.utils.encode_cell({ r: rIdx, c: serialColIdx });
-      sheet[cellRef] = { t: 's', v: String(upd.actualSerial) };
+      const row = sheet.getRow(upd.billingIdx);
+      
+      // 제조번호 셀 업데이트
+      const serialCell = row.getCell(serialColIdx);
+      serialCell.value = String(upd.actualSerial);
+
+      // 보정이력 셀 업데이트 (누적 기록 지원)
+      const historyCell = row.getCell(historyColIdx);
+      const oldVal = historyCell.value ? String(historyCell.value).trim() : '';
+      const newLog = `[${nowStr}] 보정: 실사 제조번호 [${upd.actualSerial}] 반영`;
+      historyCell.value = oldVal ? `${oldVal}\n${newLog}` : newLog;
+      historyCell.alignment = { wrapText: true, vertical: 'middle' };
     });
 
-    // 엑셀 저장
-    XLSX.writeFile(wb, f1Path);
-    console.log(`Updated ${updates.length} rows in File 1: ${f1Path}`);
+    // 3. 서식을 그대로 보존하여 파일 저장
+    await workbook.xlsx.writeFile(f1Path);
+    console.log(`Updated ${updates.length} rows using ExcelJS in File 1: ${f1Path}`);
 
-    res.json({ message: `성공적으로 ${updates.length}개의 자산 제조번호를 청구 데이터에 반영했습니다.` });
+    res.json({ message: `성공적으로 ${updates.length}개의 자산 제조번호와 보정이력을 청구 데이터에 반영했습니다.` });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: '청구 파일 업데이트 저장 중 오류: ' + error.message });

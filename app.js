@@ -231,10 +231,11 @@ function handleUpload(file, endpoint, labelElem, selectElem, fileNum) {
       if (fileNum === 2) file2Uploaded = true;
       if (fileNum === 3) file3Uploaded = true;
 
-      // Enable run button if all three are ready
+      // Enable run button and auto-run if all three are ready
       if (file1Uploaded && file2Uploaded && file3Uploaded) {
         btnRunCompare.disabled = false;
-        showToast('3개의 파일이 모두 로드되었습니다. 대조 분석 시작 버튼을 눌러주세요.');
+        showToast('3개의 파일이 모두 로드되었습니다. 대조 분석을 시작합니다.');
+        runCompare();
       } else {
         showToast(`${file.name} 파일의 업로드를 완료했습니다.`);
       }
@@ -348,6 +349,9 @@ async function runCompare() {
     renderActiveTab();
     btnSave.disabled = false;
     showToast('분석 및 대조 작업이 완료되었습니다.');
+    if (typeof window.loadInitialSeriallessData === 'function') {
+      window.loadInitialSeriallessData();
+    }
   } catch (error) {
     haltApplication(`분석 작업 실패: ${error.message}`);
   } finally {
@@ -1170,52 +1174,47 @@ let slState = {
   matchedPairs: [],
   unmatchedBilling: [],
   unmatchedActual: [],
-  selectedPairs: new Set() // Set of billing._id
+  selectedPairs: new Set(), // Set of billing._id
+  allBillingModels: [],
+  allActualModels: []
 };
 
 function initSeriallessMatching() {
-  const slFile1 = document.getElementById('sl-file1');
-  const slFile2 = document.getElementById('sl-file2');
-  const slFile3 = document.getElementById('sl-file3');
-  const slLblFile1 = document.getElementById('sl-lbl-file1');
-  const slLblFile2 = document.getElementById('sl-lbl-file2');
-  const slLblFile3 = document.getElementById('sl-lbl-file3');
-  const slBtnLoad = document.getElementById('sl-btn-load');
   const slBtnRunMatch = document.getElementById('sl-btn-run-match');
   const slBtnApplySave = document.getElementById('sl-btn-apply-save');
-  
-  const slFilterBillingModel = document.getElementById('sl-filter-billing-model');
   const slFilterBillingSerial = document.getElementById('sl-filter-billing-serial');
-  const slFilterActualModel = document.getElementById('sl-filter-actual-model');
-  
   const slCbEmpid = document.getElementById('sl-cb-empid');
   const slCbName = document.getElementById('sl-cb-name');
   const slCbDept = document.getElementById('sl-cb-dept');
   const slCbWorkplace = document.getElementById('sl-cb-workplace');
   const slCbSelectAll = document.getElementById('sl-cb-select-all');
+  const slBillingModelSelectAll = document.getElementById('sl-billing-model-select-all');
+  const slActualModelSelectAll = document.getElementById('sl-actual-model-select-all');
 
-  // Sync file pickers
-  slFile1.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      slLblFile1.innerText = file.name;
-      handleUpload(file, '/api/upload-file1', lblFile1, selKey1, 1);
-    }
-  });
-  slFile2.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      slLblFile2.innerText = file.name;
-      handleUpload(file, '/api/upload-file2', lblFile2, selKey2, 2);
-    }
-  });
-  slFile3.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      slLblFile3.innerText = file.name;
-      handleUpload(file, '/api/upload-file3', lblFile3, selKey3, 3);
-    }
-  });
+  // Bind model Select All checkboxes
+  if (slBillingModelSelectAll) {
+    slBillingModelSelectAll.addEventListener('change', (e) => {
+      const checked = e.target.checked;
+      const container = document.getElementById('sl-filter-billing-model-container');
+      if (container) {
+        container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.checked = checked;
+        });
+      }
+    });
+  }
+
+  if (slActualModelSelectAll) {
+    slActualModelSelectAll.addEventListener('change', (e) => {
+      const checked = e.target.checked;
+      const container = document.getElementById('sl-filter-actual-model-container');
+      if (container) {
+        container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.checked = checked;
+        });
+      }
+    });
+  }
 
   // Load configuration if already uploaded in tab 1
   async function checkGlobalConfig() {
@@ -1223,17 +1222,63 @@ function initSeriallessMatching() {
       const res = await fetch('/api/config');
       const data = await res.json();
       if (data.hasConfig) {
-        if (data.file1Name) slLblFile1.innerText = data.file1Name;
-        if (data.file2Name) slLblFile2.innerText = data.file2Name;
-        if (data.file3Name) slLblFile3.innerText = data.file3Name;
-        
-        document.getElementById('sl-load-status').innerHTML = `
-          청구: ${data.file1Name || '업로드됨'}<br>
-          실사: ${data.file2Name || '업로드됨'}<br>
-          렌탈: ${data.file3Name || '업로드됨'}
-        `;
-        
-        slBtnRunMatch.disabled = false;
+        // Restore upload states in Tab 1
+        file1Uploaded = true;
+        file2Uploaded = true;
+        file3Uploaded = true;
+
+        lblFile1.innerText = data.file1Name;
+        lblFile1.style.color = 'var(--primary-color)';
+        lblFile1.style.fontWeight = 'bold';
+
+        lblFile2.innerText = data.file2Name;
+        lblFile2.style.color = 'var(--primary-color)';
+        lblFile2.style.fontWeight = 'bold';
+
+        lblFile3.innerText = data.file3Name;
+        lblFile3.style.color = 'var(--primary-color)';
+        lblFile3.style.fontWeight = 'bold';
+
+        // Populate selKey1
+        selKey1.innerHTML = '';
+        data.headers1.forEach(h => {
+          const opt = document.createElement('option');
+          opt.value = h;
+          opt.innerText = h;
+          selKey1.appendChild(opt);
+        });
+        selKey1.value = data.key1;
+        selKey1.disabled = false;
+
+        // Populate selKey2
+        selKey2.innerHTML = '';
+        data.headers2.forEach(h => {
+          const opt = document.createElement('option');
+          opt.value = h;
+          opt.innerText = h;
+          selKey2.appendChild(opt);
+        });
+        selKey2.value = data.key2;
+        selKey2.disabled = false;
+
+        // Populate selKey3
+        selKey3.innerHTML = '';
+        data.headers3.forEach(h => {
+          const opt = document.createElement('option');
+          opt.value = h;
+          opt.innerText = h;
+          selKey3.appendChild(opt);
+        });
+        selKey3.value = data.key3;
+        selKey3.disabled = false;
+
+        btnRunCompare.disabled = false;
+
+        // Auto trigger comparison in Tab 1
+        await runCompare();
+
+        if (slBtnRunMatch) slBtnRunMatch.disabled = false;
+        await loadInitialSeriallessData();
       }
     } catch (e) {
       console.error(e);
@@ -1241,48 +1286,71 @@ function initSeriallessMatching() {
   }
   checkGlobalConfig();
 
-  // Load button
-  slBtnLoad.addEventListener('click', async () => {
-    showLoading("데이터 분석 및 초기화 중...");
+  // Load initial unique models and raw unmatched counts (without matching)
+  async function loadInitialSeriallessData() {
     try {
-      // Trigger normal compare first to load files on backend
-      const configRes = await fetch('/api/config');
-      const configData = await configRes.json();
-      if (!configData.hasConfig) {
-        hideLoading();
-        alert("3개 파일을 먼저 업로드해 주세요.");
-        return;
+      const k1 = selKey1.value;
+      const k2 = selKey2.value;
+      const billingSerial = slFilterBillingSerial ? slFilterBillingSerial.value : "";
+      const url = `/api/serialless-initial?key1=${encodeURIComponent(k1)}&key2=${encodeURIComponent(k2)}&billingSerial=${encodeURIComponent(billingSerial)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.hasData) {
+        if (slBtnRunMatch) slBtnRunMatch.disabled = false;
+        
+        slState.allBillingModels = data.models.billing;
+        slState.allActualModels = data.models.actual;
+
+        // Populate model checkbox containers (unchecked by default on startup)
+        populateCheckboxContainer('sl-filter-billing-model-container', data.models.billing, []);
+        populateCheckboxContainer('sl-filter-actual-model-container', data.models.actual, []);
+        
+        // Update monitoring counts in global header
+        document.getElementById('sl-mon-billing-count').innerText = data.counts.billing;
+        document.getElementById('sl-mon-actual-count').innerText = data.counts.actual;
+        document.getElementById('sl-mon-candidate-count').innerText = 0;
+        document.getElementById('sl-mon-approved-count').innerText = 0;
+        
+        // Show placeholder table
+        const tbodyPairs = document.getElementById('sl-tbody-pairs');
+        if (tbodyPairs) {
+          tbodyPairs.innerHTML = `
+            <tr>
+              <td colspan="4" style="text-align:center; padding:40px; color:#718096; font-weight:500;">
+                조건을 설정한 후 [매칭 시작] 버튼을 누르면 매칭 분석이 시작됩니다.
+              </td>
+            </tr>
+          `;
+        }
       }
-
-      await fetch('/api/compare', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key1: configData.key1,
-          key2: configData.key2,
-          key3: configData.key3
-        })
-      });
-
-      document.getElementById('sl-load-status').innerHTML = `
-        청구: ${configData.file1Name || '업로드됨'}<br>
-        실사: ${configData.file2Name || '업로드됨'}<br>
-        렌탈: ${configData.file3Name || '업로드됨'}
-      `;
-
-      slBtnRunMatch.disabled = false;
-      hideLoading();
-      
-      // Auto trigger first match
-      runSeriallessMatch();
     } catch (e) {
-      hideLoading();
-      alert("데이터 불러오기 실패: " + e.message);
+      console.error("초기 모델명 및 미매칭 목록 로드 실패: ", e);
     }
-  });
+  }
+
+  // Dynamic filter for billing serial textbox (relists models dynamically on typing without matching)
+  if (slFilterBillingSerial) {
+    slFilterBillingSerial.addEventListener('input', () => {
+      loadInitialSeriallessData();
+    });
+  }
 
   // Run match button
-  slBtnRunMatch.addEventListener('click', runSeriallessMatch);
+  if (slBtnRunMatch) {
+    slBtnRunMatch.addEventListener('click', runSeriallessMatch);
+  }
+
+  // Expose loadInitialSeriallessData globally so it can be triggered by Tab 1 file uploads
+  window.loadInitialSeriallessData = loadInitialSeriallessData;
+  window.runSeriallessMatch = runSeriallessMatch;
+
+  // Helper to get checked checkbox values
+  function getCheckedModels(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return [];
+    const checked = container.querySelectorAll('input[type="checkbox"]:checked');
+    return Array.from(checked).map(cb => cb.value);
+  }
 
   async function runSeriallessMatch() {
     showLoading("시리얼없음 조건 매칭 분석 중...");
@@ -1294,15 +1362,23 @@ function initSeriallessMatching() {
         workplace: slCbWorkplace.checked
       };
       const filters = {
-        billingModel: slFilterBillingModel.value,
+        billingModels: getCheckedModels('sl-filter-billing-model-container'),
         billingSerial: slFilterBillingSerial.value,
-        actualModel: slFilterActualModel.value
+        billingModelKeyword: document.getElementById('sl-filter-billing-model-keyword') ? document.getElementById('sl-filter-billing-model-keyword').value : "",
+        actualModels: getCheckedModels('sl-filter-actual-model-container'),
+        actualModelKeyword: document.getElementById('sl-filter-actual-model-keyword') ? document.getElementById('sl-filter-actual-model-keyword').value : ""
       };
 
       const res = await fetch('/api/match-serialless', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ criteria, filters })
+        body: JSON.stringify({ 
+          criteria, 
+          filters,
+          key1: selKey1.value,
+          key2: selKey2.value,
+          key3: selKey3.value
+        })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -1318,9 +1394,13 @@ function initSeriallessMatching() {
       });
       slCbSelectAll.checked = true;
 
-      // Populate Model Dropdowns if not populated yet
-      populateDropdown(slFilterBillingModel, data.models.billing, filters.billingModel);
-      populateDropdown(slFilterActualModel, data.models.actual, filters.actualModel);
+      // Populate Model Checkbox Containers
+      populateCheckboxContainer('sl-filter-billing-model-container', data.models.billing, filters.billingModels);
+      populateCheckboxContainer('sl-filter-actual-model-container', data.models.actual, filters.actualModels);
+
+      // Save models list in state
+      slState.allBillingModels = data.models.billing;
+      slState.allActualModels = data.models.actual;
 
       // Render all tables
       renderSeriallessTables();
@@ -1333,16 +1413,66 @@ function initSeriallessMatching() {
     }
   }
 
-  function populateDropdown(selectElem, options, currentVal) {
-    selectElem.innerHTML = '<option value="">전체 모델</option>';
-    options.sort().forEach(opt => {
-      const option = document.createElement('option');
-      option.value = opt;
-      option.textContent = opt;
-      if (opt === currentVal) option.selected = true;
-      selectElem.appendChild(option);
+  function populateCheckboxContainer(containerId, options, selectedVals = null) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    const currentChecked = new Set();
+    if (selectedVals && selectedVals.length > 0) {
+      selectedVals.forEach(v => currentChecked.add(v));
+    } else if (selectedVals === null) {
+      // Preserve current checks if selectedVals is null
+      container.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+        currentChecked.add(cb.value);
+      });
+    }
+
+    const currentLabels = container.querySelectorAll('label');
+    const currentOptions = Array.from(currentLabels).map(l => l.querySelector('input').value);
+    const sortedNewOptions = [...options].sort();
+    
+    if (currentOptions.length > 0 && JSON.stringify(currentOptions.sort()) === JSON.stringify(sortedNewOptions)) {
+      container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.checked = currentChecked.has(cb.value);
+      });
+      return;
+    }
+    
+    container.innerHTML = '';
+    
+    if (options.length === 0) {
+      container.innerHTML = '<div style="color:#718096; text-align:center; padding:10px;">모델 없음</div>';
+      return;
+    }
+    
+    sortedNewOptions.forEach(opt => {
+      const label = document.createElement('label');
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.gap = '6px';
+      label.style.margin = '2px 0';
+      label.style.cursor = 'pointer';
+      label.style.fontSize = '0.72rem';
+      
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = opt;
+      cb.style.cursor = 'pointer';
+      cb.checked = currentChecked.has(opt);
+      
+      label.appendChild(cb);
+      
+      const span = document.createElement('span');
+      span.textContent = opt;
+      span.style.whiteSpace = 'nowrap';
+      span.style.overflow = 'hidden';
+      span.style.textOverflow = 'ellipsis';
+      span.style.maxWidth = '140px';
+      span.title = opt;
+      
+      label.appendChild(span);
+      container.appendChild(label);
     });
-    selectElem.disabled = false;
   }
 
   // Select all checkbox
@@ -1352,10 +1482,13 @@ function initSeriallessMatching() {
     itemCheckboxes.forEach(cb => {
       cb.checked = checked;
       const id = cb.getAttribute('data-id');
+      const tr = cb.closest('tr');
       if (checked) {
         slState.selectedPairs.add(id);
+        if (tr) tr.classList.add('sl-row-highlight');
       } else {
         slState.selectedPairs.delete(id);
+        if (tr) tr.classList.remove('sl-row-highlight');
       }
     });
     updateMonitoringCounts();
@@ -1415,139 +1548,143 @@ function updateMonitoringCounts() {
   document.getElementById('sl-mon-candidate-count').innerText = slState.matchedPairs.length;
   document.getElementById('sl-mon-approved-count').innerText = slState.selectedPairs.size;
   
-  document.getElementById('sl-count-col1').innerText = slState.matchedPairs.length;
-  document.getElementById('sl-count-col2').innerText = slState.matchedPairs.length;
-  document.getElementById('sl-count-col3').innerText = slState.unmatchedBilling.length;
-  document.getElementById('sl-count-col4').innerText = slState.unmatchedActual.length;
+  const elPairs = document.getElementById('sl-count-pairs');
+  if (elPairs) elPairs.innerText = slState.matchedPairs.length;
+  
+  const elCol3 = document.getElementById('sl-count-col3');
+  if (elCol3) elCol3.innerText = slState.unmatchedBilling.length;
+  
+  const elCol4 = document.getElementById('sl-count-col4');
+  if (elCol4) elCol4.innerText = slState.unmatchedActual.length;
 }
 
 function renderSeriallessTables() {
   updateMonitoringCounts();
   
-  const tbodyCol1 = document.getElementById('sl-tbody-pair-billing');
-  const tbodyCol2 = document.getElementById('sl-tbody-pair-actual');
+  const tbodyPairs = document.getElementById('sl-tbody-pairs');
   const tbodyCol3 = document.getElementById('sl-tbody-raw-billing');
   const tbodyCol4 = document.getElementById('sl-tbody-raw-actual');
   
-  tbodyCol1.innerHTML = '';
-  tbodyCol2.innerHTML = '';
-  tbodyCol3.innerHTML = '';
-  tbodyCol4.innerHTML = '';
+  if (tbodyPairs) tbodyPairs.innerHTML = '';
+  if (tbodyCol3) tbodyCol3.innerHTML = '';
+  if (tbodyCol4) tbodyCol4.innerHTML = '';
 
-  // Render Matched Pairs
-  slState.matchedPairs.forEach((pair) => {
-    const b = pair.billing;
-    const a = pair.actual;
-    const isChecked = slState.selectedPairs.has(b._id);
+  // Helper function to clean name for comparison
+  function cleanName(val) {
+    if (!val) return '';
+    return String(val).replace(/\s+/g, '').replace(/\(공용\)/g, '').trim();
+  }
 
-    // Mismatches highlighting
-    const nameMismatch = cleanName(b.name) !== cleanName(a.name) ? 'sl-mismatch' : '';
-    const deptMismatch = b.dept.trim() !== a.dept.trim() ? 'sl-mismatch' : '';
-    const workplaceMismatch = b.workplace.trim() !== a.workplace.trim() ? 'sl-mismatch' : '';
+  // Render Matched Pairs (Merged)
+  if (tbodyPairs) {
+    slState.matchedPairs.forEach((pair) => {
+      const b = pair.billing;
+      const a = pair.actual;
+      const isChecked = slState.selectedPairs.has(b._id);
 
-    // Col 1 row (Billing Part)
-    const tr1 = document.createElement('tr');
-    tr1.style.borderBottom = '1px solid #e2e8f0';
-    if (isChecked) tr1.classList.add('sl-row-highlight');
-    tr1.innerHTML = `
-      <td style="text-align: center; padding: 6px 4px; vertical-align: middle;">
-        <input type="checkbox" class="sl-pair-item-cb" data-id="${b._id}" ${isChecked ? 'checked' : ''}>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div style="font-weight:bold;">${b.name || '(공백)'}</div>
-        <div style="font-size:0.65rem; color:#718096;">${b.empId || '(사번없음)'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div>${b.dept || '-'}</div>
-        <div style="font-size:0.65rem; color:#718096;">${b.workplace || '-'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div style="font-weight: 500;">${b.model}</div>
-        <div class="serial-highlight" style="font-size:0.7rem; font-family:monospace; color:#4f46e5;">${b.serial || '(시리얼없음)'}</div>
-        <span class="sl-ref-subtext" style="color: ${pair.billingRental.status === '일치' ? '#16a34a' : (pair.billingRental.status === '유사' ? '#d97706' : '#718096')}">
-          ● ${pair.billingRental.detail || '렌탈 미일치'}
-        </span>
-      </td>
-    `;
-    
-    // Bind checkbox change
-    tr1.querySelector('.sl-pair-item-cb').addEventListener('change', (e) => {
-      const checked = e.target.checked;
-      if (checked) {
-        slState.selectedPairs.add(b._id);
-        tr1.classList.add('sl-row-highlight');
-        tr2.classList.add('sl-row-highlight');
-      } else {
-        slState.selectedPairs.delete(b._id);
-        tr1.classList.remove('sl-row-highlight');
-        tr2.classList.remove('sl-row-highlight');
-      }
-      updateMonitoringCounts();
+      // Mismatches highlighting
+      const nameMismatch = cleanName(b.name) !== cleanName(a.name) ? 'sl-mismatch' : '';
+      const deptMismatch = b.dept.trim() !== a.dept.trim() ? 'sl-mismatch' : '';
+      const workplaceMismatch = b.workplace.trim() !== a.workplace.trim() ? 'sl-mismatch' : '';
+
+      const tr = document.createElement('tr');
+      if (isChecked) tr.classList.add('sl-row-highlight');
+      tr.innerHTML = `
+        <td style="text-align: center; padding: 10px 4px; vertical-align: middle;">
+          <input type="checkbox" class="sl-pair-item-cb" data-id="${b._id}" ${isChecked ? 'checked' : ''}>
+        </td>
+        <td style="padding: 10px 8px; vertical-align: middle;">
+          <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center;">
+            <div>
+              <span style="font-weight:bold; font-size:0.85rem;">${b.name || '(공백)'}</span>
+              <span style="font-size:0.7rem; color:#718096; margin-left:4px;">(${b.empId || '사번없음'})</span>
+              <div style="font-size:0.75rem; color:#4a5568; margin-top:2px;">${b.dept || '-'} / ${b.workplace || '-'}</div>
+            </div>
+            <div style="text-align: right; min-width: 140px;">
+              <div style="font-weight: 500; font-size:0.75rem; color:#1a202c;">${b.model}</div>
+              <div class="serial-highlight" style="font-size:0.72rem; font-family:monospace; color:#4f46e5; font-weight:600; margin-top:2px;">${b.serial || '(시리얼없음)'}</div>
+              <span class="sl-ref-subtext" style="color: ${pair.billingRental.status === '일치' ? '#16a34a' : (pair.billingRental.status === '유사' ? '#d97706' : '#718096')}; font-size:0.65rem; margin-top:2px;">
+                ● ${pair.billingRental.detail || '렌탈 미일치'}
+              </span>
+            </div>
+          </div>
+        </td>
+        <td style="text-align: center; padding: 10px 4px; vertical-align: middle; background-color: #f8fafc; border-left: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0;">
+          <span class="badge-confidence badge-${pair.confidence.toLowerCase()}">${pair.confidence}</span>
+          <div style="font-size:0.6rem; color:#64748b; margin-top:4px; font-weight:500; line-height:1.2;">${pair.reason}</div>
+        </td>
+        <td style="padding: 10px 8px; vertical-align: middle;">
+          <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center;">
+            <div>
+              <span style="font-weight:bold; font-size:0.85rem;" class="${nameMismatch}">${a.name || '(공백)'}</span>
+              <span style="font-size:0.7rem; color:#718096; margin-left:4px;">(${a.empId || '사번없음'})</span>
+              <div style="font-size:0.75rem; color:#4a5568; margin-top:2px;"><span class="${deptMismatch}">${a.dept || '-'}</span> / <span class="${workplaceMismatch}">${a.workplace || '-'}</span></div>
+            </div>
+            <div style="text-align: right; min-width: 140px;">
+              <div style="font-weight: 500; font-size:0.75rem; color:#1a202c;">${a.model}</div>
+              <div class="serial-highlight" style="font-size:0.72rem; font-family:monospace; color:#0d9488; font-weight:600; margin-top:2px;">${a.serial || '(시리얼없음)'}</div>
+              <span class="sl-ref-subtext" style="color: ${pair.actualRental.status === '일치' ? '#16a34a' : (pair.actualRental.status === '유사' ? '#d97706' : '#718096')}; font-size:0.65rem; margin-top:2px;">
+                ● ${pair.actualRental.detail || '렌탈 미일치'}
+              </span>
+            </div>
+          </div>
+        </td>
+      `;
+
+      // Bind checkbox change
+      tr.querySelector('.sl-pair-item-cb').addEventListener('change', (e) => {
+        const checked = e.target.checked;
+        if (checked) {
+          slState.selectedPairs.add(b._id);
+          tr.classList.add('sl-row-highlight');
+        } else {
+          slState.selectedPairs.delete(b._id);
+          tr.classList.remove('sl-row-highlight');
+        }
+        updateMonitoringCounts();
+      });
+
+      tbodyPairs.appendChild(tr);
     });
-
-    tbodyCol1.appendChild(tr1);
-
-    // Col 2 row (Actual Part)
-    const tr2 = document.createElement('tr');
-    tr2.style.borderBottom = '1px solid #e2e8f0';
-    if (isChecked) tr2.classList.add('sl-row-highlight');
-    tr2.innerHTML = `
-      <td style="text-align: center; padding: 6px 4px; vertical-align: middle;">
-        <span class="badge-confidence badge-${pair.confidence.toLowerCase()}">${pair.confidence}</span>
-        <div style="font-size:0.55rem; color:#718096; margin-top:2px;">${pair.reason}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div style="font-weight:bold;" class="${nameMismatch}">${a.name || '(공백)'}</div>
-        <div style="font-size:0.65rem; color:#718096;">${a.empId || '(사번없음)'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div class="${deptMismatch}">${a.dept || '-'}</div>
-        <div style="font-size:0.65rem; color:#718096;" class="${workplaceMismatch}">${a.workplace || '-'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div style="font-weight: 500;">${a.model}</div>
-        <div class="serial-highlight" style="font-size:0.7rem; font-family:monospace; color:#0d9488;">${a.serial || '(시리얼없음)'}</div>
-        <span class="sl-ref-subtext" style="color: ${pair.actualRental.status === '일치' ? '#16a34a' : (pair.actualRental.status === '유사' ? '#d97706' : '#718096')}">
-          ● ${pair.actualRental.detail || '렌탈 미일치'}
-        </span>
-      </td>
-    `;
-    tbodyCol2.appendChild(tr2);
-  });
+  }
 
   // Render Unmatched Raw Billing (Col 3)
-  slState.unmatchedBilling.forEach(b => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div style="font-weight:bold;">${b.name || '(공백)'}</div>
-        <div style="font-size:0.65rem; color:#718096;">${b.empId || '(사번없음)'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div>${b.dept || '-'}</div>
-        <div style="font-size:0.65rem; color:#718096;">${b.workplace || '-'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">${b.model}</td>
-      <td style="padding: 6px 4px; vertical-align: middle; font-family:monospace;">${b.serial || '-'}</td>
-    `;
-    tbodyCol3.appendChild(tr);
-  });
+  if (tbodyCol3) {
+    slState.unmatchedBilling.forEach(b => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="padding: 6px 4px; vertical-align: middle;">
+          <div style="font-weight:bold;">${b.name || '(공백)'}</div>
+          <div style="font-size:0.65rem; color:#718096;">${b.empId || '(사번없음)'}</div>
+        </td>
+        <td style="padding: 6px 4px; vertical-align: middle;">
+          <div>${b.dept || '-'}</div>
+          <div style="font-size:0.65rem; color:#718096;">${b.workplace || '-'}</div>
+        </td>
+        <td style="padding: 6px 4px; vertical-align: middle;">${b.model}</td>
+        <td style="padding: 6px 4px; vertical-align: middle; font-family:monospace;">${b.serial || '-'}</td>
+      `;
+      tbodyCol3.appendChild(tr);
+    });
+  }
 
   // Render Unmatched Raw Actual (Col 4)
-  slState.unmatchedActual.forEach(a => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div style="font-weight:bold;">${a.name || '(공백)'}</div>
-        <div style="font-size:0.65rem; color:#718096;">${a.empId || '(사번없음)'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">
-        <div>${a.dept || '-'}</div>
-        <div style="font-size:0.65rem; color:#718096;">${a.workplace || '-'}</div>
-      </td>
-      <td style="padding: 6px 4px; vertical-align: middle;">${a.model}</td>
-      <td style="padding: 6px 4px; vertical-align: middle; font-family:monospace;">${a.serial || '-'}</td>
-    `;
-    tbodyCol4.appendChild(tr);
-  });
+  if (tbodyCol4) {
+    slState.unmatchedActual.forEach(a => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="padding: 6px 4px; vertical-align: middle;">
+          <div style="font-weight:bold;">${a.name || '(공백)'}</div>
+          <div style="font-size:0.65rem; color:#718096;">${a.empId || '(사번없음)'}</div>
+        </td>
+        <td style="padding: 6px 4px; vertical-align: middle;">
+          <div>${a.dept || '-'}</div>
+          <div style="font-size:0.65rem; color:#718096;">${a.workplace || '-'}</div>
+        </td>
+        <td style="padding: 6px 4px; vertical-align: middle;">${a.model}</td>
+        <td style="padding: 6px 4px; vertical-align: middle; font-family:monospace;">${a.serial || '-'}</td>
+      `;
+      tbodyCol4.appendChild(tr);
+    });
+  }
 }
