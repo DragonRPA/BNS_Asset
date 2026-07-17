@@ -250,6 +250,7 @@ app.post('/api/compare', async (req, res) => {
       name: row['이름'] || row['사용자'] || row['성명'] || "",
       empId: row['사번'] || row['사원번호'] || "",
       dept: row['부서'] || row['소속'] || "",
+      workplace: row['사업장'] || "",
       device: row['지급기기'] || row['구분'] || row['기기'] || "",
       model: row['상세모델'] || row['모델명'] || row['모델'] || "",
       serial: String(row[key1] || "").trim(),
@@ -262,6 +263,7 @@ app.post('/api/compare', async (req, res) => {
       name: row['이름'] || row['사용자'] || row['성명'] || "",
       empId: row['사번'] || row['사원번호'] || "",
       dept: row['부서'] || row['소속'] || "",
+      workplace: row['사업장'] || "",
       device: row['구분'] || row['지급기기'] || row['기기'] || "",
       model: row['상세모델'] || row['모델명'] || row['모델'] || "",
       serial: String(row[key2] || "").trim(),
@@ -274,6 +276,7 @@ app.post('/api/compare', async (req, res) => {
       name: row['이름'] || row['사용자'] || row['성명'] || "", // Do not default to '최종 수요처' here to avoid matching name against address
       empId: row['사번'] || row['사원번호'] || "",
       dept: row['부서'] || row['소속'] || "",
+      workplace: row['사업장'] || "",
       device: row['제품'] || row['품명'] || row['지급기기'] || row['구분'] || "",
       model: row['상세모델'] || row['모델명'] || row['모델'] || "",
       serial: String(row[key3] || "").trim(),
@@ -668,6 +671,308 @@ app.post('/api/save', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: '엑셀 결과 저장 중 오류: ' + error.message });
+  }
+});
+
+// ============================================================
+// 시리얼없음 매칭 API
+// ============================================================
+app.post('/api/match-serialless', async (req, res) => {
+  const { criteria, filters, key1, key2, key3 } = req.body;
+  const config = readConfig();
+  
+  const f1Path = fs.existsSync(config.file1Path) ? config.file1Path : FILE1_PATH;
+  const f2Path = fs.existsSync(config.file2Path) ? config.file2Path : FILE2_PATH;
+  const f3Path = fs.existsSync(config.file3Path) ? config.file3Path : FILE3_PATH;
+
+  if (!fs.existsSync(f1Path) || !fs.existsSync(f2Path)) {
+    return res.status(400).json({ error: '청구자료와 실사결과 파일이 모두 필요합니다.' });
+  }
+
+  try {
+    const wb1 = XLSX.readFile(f1Path);
+    const rows1 = XLSX.utils.sheet_to_json(wb1.Sheets[wb1.SheetNames[0]], { defval: "" });
+    const wb2 = XLSX.readFile(f2Path);
+    const rows2 = XLSX.utils.sheet_to_json(wb2.Sheets[wb2.SheetNames[0]], { defval: "" });
+    
+    let rows3 = [];
+    if (fs.existsSync(f3Path)) {
+      const wb3 = XLSX.readFile(f3Path);
+      const sheetName3 = wb3.SheetNames.includes('렌탈사현황') ? '렌탈사현황' : wb3.SheetNames[0];
+      rows3 = XLSX.utils.sheet_to_json(wb3.Sheets[sheetName3], { defval: "" });
+    }
+
+    const billingData = rows1.map((row, idx) => ({
+      _id: `b_${idx}`, idx: idx + 2,
+      name: row['이름'] || row['사용자'] || row['성명'] || "",
+      empId: row['사번'] || row['사원번호'] || "",
+      dept: row['부서'] || row['소속'] || "",
+      workplace: row['사업장'] || "",
+      device: row['지급기기'] || row['구분'] || row['기기'] || "",
+      model: row['상세모델'] || row['모델명'] || row['모델'] || "",
+      serial: String(row[key1 || config.key1] || "").trim(),
+      cleanSerial: cleanSerial(row[key1 || config.key1]),
+      originalRow: row
+    }));
+
+    const actualData = rows2.map((row, idx) => ({
+      _id: `a_${idx}`, idx: idx + 2,
+      name: row['이름'] || row['사용자'] || row['성명'] || "",
+      empId: row['사번'] || row['사원번호'] || "",
+      dept: row['부서'] || row['소속'] || "",
+      workplace: row['사업장'] || "",
+      device: row['구분'] || row['지급기기'] || row['기기'] || "",
+      model: row['상세모델'] || row['모델명'] || row['모델'] || "",
+      serial: String(row[key2 || config.key2] || "").trim(),
+      cleanSerial: cleanSerial(row[key2 || config.key2]),
+      originalRow: row
+    }));
+
+    const rentalData = rows3.map((row, idx) => ({
+      _id: `r_${idx}`, idx: idx + 2,
+      name: row['이름'] || row['사용자'] || row['성명'] || "",
+      empId: row['사번'] || row['사원번호'] || "",
+      dept: row['부서'] || row['소속'] || "",
+      workplace: row['사업장'] || "",
+      serial: String(row[key3 || config.key3] || "").trim(),
+      cleanSerial: cleanSerial(row[key3 || config.key3]),
+      originalRow: row
+    }));
+
+    // 1. 제조번호가 동일한 완전일치 데이터 제외 (사용자 요청: 제조번호 일치 건은 화면 표시 제외)
+    const exactBillingIds = new Set();
+    const exactActualIds = new Set();
+    
+    // 빌링 제조번호와 일치하는 실사 데이터 맵핑
+    const actualMap = new Map();
+    actualData.forEach(row => {
+      if (row.cleanSerial) {
+        if (!actualMap.has(row.cleanSerial)) actualMap.set(row.cleanSerial, []);
+        actualMap.get(row.cleanSerial).push(row);
+      }
+    });
+
+    billingData.forEach(bRow => {
+      if (bRow.cleanSerial && actualMap.has(bRow.cleanSerial)) {
+        const matched = actualMap.get(bRow.cleanSerial).find(a => !exactActualIds.has(a._id));
+        if (matched) {
+          exactBillingIds.add(bRow._id);
+          exactActualIds.add(matched._id);
+        }
+      }
+    });
+
+    let unmatchedB = billingData.filter(b => !exactBillingIds.add(b._id) && !exactBillingIds.has(b._id));
+    // Set add always returns the set itself. We should filter cleanly:
+    unmatchedB = billingData.filter(b => !exactBillingIds.has(b._id));
+    const unmatchedA = actualData.filter(a => !exactActualIds.has(a._id));
+
+    // 렌탈현황 데이터 맵 (빠른 검색용)
+    const rentalLookup = new Map();
+    rentalData.forEach(r => {
+      if (r.cleanSerial) {
+        rentalLookup.set(r.cleanSerial, r);
+      }
+    });
+
+    // 렌탈현황 유사 비교 헬퍼
+    function checkRentalStatus(serialStr) {
+      if (!serialStr) return { status: '없음', detail: '' };
+      const cSer = cleanSerial(serialStr);
+      if (!cSer) return { status: '없음', detail: '' };
+      
+      if (rentalLookup.has(cSer)) {
+        const match = rentalLookup.get(cSer);
+        const assetNo = match.originalRow['관리번호'] || match.originalRow['자산번호'] || '';
+        return { status: '일치', detail: `렌탈 일치${assetNo ? `(${assetNo})` : ''}` };
+      }
+
+      // 유사 매칭 확인 (거리 1)
+      for (const [rClean, rRow] of rentalLookup.entries()) {
+        if (Math.abs(rClean.length - cSer.length) <= 1) {
+          if (getLevenshteinDistance(cSer, rClean) <= 1) {
+            const assetNo = rRow.originalRow['관리번호'] || rRow.originalRow['자산번호'] || '';
+            return { status: '유사', detail: `렌탈 유사: ${rRow.serial}${assetNo ? `(${assetNo})` : ''}` };
+          }
+        }
+      }
+
+      return { status: '미검출', detail: '렌탈 미일치' };
+    }
+
+    // 필터 전 전체 모델명 추출 (드롭다운을 위해)
+    const billingModels = [...new Set(unmatchedB.map(b => b.model).filter(Boolean))];
+    const actualModels = [...new Set(unmatchedA.map(a => a.model).filter(Boolean))];
+
+    // 필터 적용
+    let filteredB = unmatchedB;
+    if (filters.billingModel) {
+      filteredB = filteredB.filter(b => b.model === filters.billingModel);
+    }
+    if (filters.billingSerial) {
+      const search = filters.billingSerial.trim().toUpperCase();
+      filteredB = filteredB.filter(b => b.serial.toUpperCase().includes(search));
+    }
+
+    let filteredA = unmatchedA;
+    if (filters.actualModel) {
+      filteredA = filteredA.filter(a => a.model === filters.actualModel);
+    }
+
+    // 2. 조건 필터링 기반 1:1 매칭 알고리즘
+    const matchedPairs = [];
+    const matchedActualIds = new Set();
+
+    filteredB.forEach(bRow => {
+      // "사번이 공백일 때는 모두 true" 룰 적용
+      const hasEmpId = bRow.empId && bRow.empId.trim() !== "";
+      const evalEmpid = hasEmpId ? !!criteria.empid : true;
+      const evalName = hasEmpId ? !!criteria.name : true;
+      const evalDept = hasEmpId ? !!criteria.dept : true;
+      const evalWorkplace = hasEmpId ? !!criteria.workplace : true;
+
+      let bestCandidate = null;
+      let highestScore = -1;
+
+      filteredA.forEach(aRow => {
+        if (matchedActualIds.has(aRow._id)) return;
+
+        const empIdMatch = hasEmpId && aRow.empId && compareEmpId(bRow.empId, aRow.empId);
+        const nameMatch = cleanName(bRow.name) === cleanName(aRow.name) && cleanName(bRow.name).length >= 2;
+        const deptMatch = bRow.dept && aRow.dept && bRow.dept.trim() === aRow.dept.trim();
+        const workplaceMatch = bRow.workplace && aRow.workplace && bRow.workplace.trim() === aRow.workplace.trim();
+
+        // 매칭 가능성 판단 (선택/강제 적용된 조건 중 최소 하나가 맞아야 함)
+        const isMatched = 
+          (evalEmpid && empIdMatch) || 
+          (evalName && nameMatch) || 
+          (evalDept && deptMatch) || 
+          (evalWorkplace && workplaceMatch);
+
+        if (isMatched) {
+          // 점수 부여
+          let score = 0;
+          if (empIdMatch) score += 100;
+          if (nameMatch) score += 50;
+          if (deptMatch) score += 20;
+          if (workplaceMatch) score += 10;
+
+          if (score > highestScore) {
+            highestScore = score;
+            bestCandidate = aRow;
+          }
+        }
+      });
+
+      if (bestCandidate) {
+        matchedActualIds.add(bestCandidate._id);
+        
+        // 신뢰도 레이블 지정
+        let confidence = 'Low';
+        let confidenceReason = '부분 정보 일치';
+        if (highestScore >= 150) {
+          confidence = 'High';
+          confidenceReason = '사번 및 이름 일치';
+        } else if (highestScore >= 100) {
+          confidence = 'High';
+          confidenceReason = '사번 일치';
+        } else if (highestScore >= 50) {
+          confidence = 'High';
+          confidenceReason = '이름 일치';
+        }
+
+        // 렌탈 현황 참조 검사 (작업 자체에는 영향이 없어야 함)
+        const bRental = checkRentalStatus(bRow.serial);
+        const aRental = checkRentalStatus(bestCandidate.serial);
+
+        matchedPairs.push({
+          billing: bRow,
+          actual: bestCandidate,
+          score: highestScore,
+          confidence,
+          reason: confidenceReason,
+          billingRental: bRental,
+          actualRental: aRental
+        });
+      }
+    });
+
+    // 매칭에서 선택되지 않은 잔여 데이터
+    const finalUnmatchedB = filteredB.filter(b => !matchedPairs.some(p => p.billing._id === b._id));
+    const finalUnmatchedA = filteredA.filter(a => !matchedActualIds.has(a._id));
+
+    res.json({
+      matchedPairs,
+      unmatchedBilling: finalUnmatchedB,
+      unmatchedActual: finalUnmatchedA,
+      models: {
+        billing: billingModels,
+        actual: actualModels
+      }
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: '시리얼없음 매칭 처리 중 오류: ' + error.message });
+  }
+});
+
+// ============================================================
+// 시리얼없음 매칭 결과 반영 및 저장 API
+// ============================================================
+app.post('/api/save-serialless', async (req, res) => {
+  const { updates, key1 } = req.body;
+  const config = readConfig();
+
+  const f1Path = fs.existsSync(config.file1Path) ? config.file1Path : FILE1_PATH;
+
+  if (!fs.existsSync(f1Path)) {
+    return res.status(400).json({ error: '청구자료 파일이 존재하지 않습니다.' });
+  }
+  if (!updates || !Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ error: '업데이트할 매칭 데이터가 지정되지 않았습니다.' });
+  }
+
+  try {
+    const wb = XLSX.readFile(f1Path);
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    
+    const targetKey = key1 || config.key1;
+    if (!targetKey) {
+      return res.status(400).json({ error: '청구자료 비교 기준 컬럼(제조번호)이 설정되지 않았습니다.' });
+    }
+
+    // 대상 컬럼 인덱스 찾기
+    let serialColIdx = -1;
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const cellRef = XLSX.utils.encode_cell({ r: range.s.r, c: C });
+      const cellVal = sheet[cellRef] ? String(sheet[cellRef].v).trim() : '';
+      if (cellVal === targetKey) {
+        serialColIdx = C;
+        break;
+      }
+    }
+
+    if (serialColIdx === -1) {
+      return res.status(400).json({ error: `청구자료에서 '${targetKey}' 컬럼을 찾을 수 없습니다.` });
+    }
+
+    // 각 대상 행의 시리얼번호 업데이트
+    updates.forEach(upd => {
+      const rIdx = upd.billingIdx - 1; // 1-based index to 0-based index
+      const cellRef = XLSX.utils.encode_cell({ r: rIdx, c: serialColIdx });
+      sheet[cellRef] = { t: 's', v: String(upd.actualSerial) };
+    });
+
+    // 엑셀 저장
+    XLSX.writeFile(wb, f1Path);
+    console.log(`Updated ${updates.length} rows in File 1: ${f1Path}`);
+
+    res.json({ message: `성공적으로 ${updates.length}개의 자산 제조번호를 청구 데이터에 반영했습니다.` });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: '청구 파일 업데이트 저장 중 오류: ' + error.message });
   }
 });
 
