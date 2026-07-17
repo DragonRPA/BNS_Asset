@@ -1671,14 +1671,14 @@ function renderSeriallessTables() {
         showLoading("다른 매칭 후보 검색 중...");
         try {
           const criteria = {
-            empid: slCbEmpid.checked,
-            name: slCbName.checked,
-            dept: slCbDept.checked,
-            workplace: slCbWorkplace.checked
+            empid: document.getElementById('sl-cb-empid') ? document.getElementById('sl-cb-empid').checked : false,
+            name: document.getElementById('sl-cb-name') ? document.getElementById('sl-cb-name').checked : false,
+            dept: document.getElementById('sl-cb-dept') ? document.getElementById('sl-cb-dept').checked : false,
+            workplace: document.getElementById('sl-cb-workplace') ? document.getElementById('sl-cb-workplace').checked : false
           };
           const filters = {
             billingModels: getCheckedModels('sl-filter-billing-model-container'),
-            billingSerial: slFilterBillingSerial.value,
+            billingSerial: document.getElementById('sl-filter-billing-serial') ? document.getElementById('sl-filter-billing-serial').value : "",
             billingModelKeyword: document.getElementById('sl-filter-billing-model-keyword') ? document.getElementById('sl-filter-billing-model-keyword').value : "",
             actualModels: getCheckedModels('sl-filter-actual-model-container'),
             actualModelKeyword: document.getElementById('sl-filter-actual-model-keyword') ? document.getElementById('sl-filter-actual-model-keyword').value : ""
