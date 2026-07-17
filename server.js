@@ -1019,6 +1019,133 @@ app.post('/api/match-serialless', async (req, res) => {
 });
 
 // ============================================================
+// 시리얼없음 개별 행 재매칭 API
+// ============================================================
+app.post('/api/rematch-row', async (req, res) => {
+  const { billingRow, criteria, filters, alreadyMatchedActualIds, excludedActualIds, key1, key2, key3 } = req.body;
+  const config = readConfig();
+  const f2Path = fs.existsSync(config.file2Path) ? config.file2Path : FILE2_PATH;
+
+  if (!fs.existsSync(f2Path)) {
+    return res.status(400).json({ error: '실사 데이터 파일이 존재하지 않습니다.' });
+  }
+
+  try {
+    const XLSX = require('xlsx');
+    const wb2 = XLSX.readFile(f2Path);
+    const rows2 = XLSX.utils.sheet_to_json(wb2.Sheets[wb2.SheetNames[0]], { defval: "" });
+    const k2 = key2 || config.key2;
+
+    const actualData = rows2.map((row, idx) => ({
+      _id: `a_${idx}`,
+      model: String(row['상세모델'] || row['모델명'] || row['모델'] || ""),
+      serial: String(row[k2] || "").trim(),
+      cleanSerial: cleanSerial(row[k2]),
+      empId: String(row['사번'] || row['사용자사번'] || ""),
+      name: String(row['이름'] || row['사용자'] || row['사용자명'] || ""),
+      dept: String(row['부서'] || row['사용부서'] || ""),
+      workplace: String(row['사업장'] || row['근무지'] || ""),
+      originalRow: row
+    }));
+
+    // 1. 이미 매칭되었거나 사용자가 거절한(더블클릭한) 실사 ID 제외
+    const ignoreActualIds = new Set([
+      ...(Array.isArray(alreadyMatchedActualIds) ? alreadyMatchedActualIds : []),
+      ...(Array.isArray(excludedActualIds) ? excludedActualIds : [])
+    ]);
+
+    const candidates = actualData.filter(a => !ignoreActualIds.has(a._id));
+
+    // 2. 모델 필터링 적용 (실사 키워드 및 체크박스 필터)
+    let filteredA = candidates;
+    const aChecked = (filters && filters.actualModels) || [];
+    const aKeyword = (filters && filters.actualModelKeyword) ? filters.actualModelKeyword.trim().toUpperCase() : "";
+    if (aChecked.length > 0 || aKeyword !== "") {
+      filteredA = filteredA.filter(a => {
+        const matchesChecked = aChecked.includes(a.model);
+        const matchesKeyword = aKeyword !== "" && a.model.toUpperCase().includes(aKeyword);
+        return matchesChecked || matchesKeyword;
+      });
+    }
+
+    // 3. 단일 청구 데이터에 대해 새로운 매칭 후보 탐색 (AND 조건 적용)
+    let bestCandidate = null;
+    let highestScore = -1;
+
+    filteredA.forEach(aRow => {
+      const empIdMatch = billingRow.empId && aRow.empId && compareEmpId(billingRow.empId, aRow.empId);
+      const nameMatch = cleanName(billingRow.name) === cleanName(aRow.name) && cleanName(billingRow.name).length >= 2;
+      const deptMatch = billingRow.dept && aRow.dept && billingRow.dept.trim() === aRow.dept.trim();
+      const workplaceMatch = billingRow.workplace && aRow.workplace && billingRow.workplace.trim() === aRow.workplace.trim();
+
+      let isMatched = true;
+      if (criteria.empid && !empIdMatch) isMatched = false;
+      if (criteria.name && !nameMatch) isMatched = false;
+      if (criteria.dept && !deptMatch) isMatched = false;
+      if (criteria.workplace && !workplaceMatch) isMatched = false;
+
+      if (isMatched) {
+        let score = 0;
+        if (empIdMatch) score += 100;
+        if (nameMatch) score += 50;
+        if (deptMatch) score += 20;
+        if (workplaceMatch) score += 10;
+
+        if (score > highestScore) {
+          highestScore = score;
+          bestCandidate = aRow;
+        }
+      }
+    });
+
+    if (bestCandidate) {
+      // 신뢰도 및 상세 내용 계산
+      const empIdMatch = billingRow.empId && bestCandidate.empId && compareEmpId(billingRow.empId, bestCandidate.empId);
+      const nameMatch = cleanName(billingRow.name) === cleanName(bestCandidate.name) && cleanName(billingRow.name).length >= 2;
+      const deptMatch = billingRow.dept && bestCandidate.dept && billingRow.dept.trim() === bestCandidate.dept.trim();
+      const workplaceMatch = billingRow.workplace && bestCandidate.workplace && billingRow.workplace.trim() === bestCandidate.workplace.trim();
+
+      const matches = [];
+      const diffs = [];
+      if (empIdMatch) matches.push("사번"); else if (billingRow.empId || bestCandidate.empId) diffs.push("사번");
+      if (nameMatch) matches.push("이름"); else if (billingRow.name || bestCandidate.name) diffs.push("이름");
+      if (deptMatch) matches.push("부서"); else if (billingRow.dept || bestCandidate.dept) diffs.push("부서");
+      if (workplaceMatch) matches.push("사업장"); else if (billingRow.workplace || bestCandidate.workplace) diffs.push("사업장");
+
+      const confidence = (empIdMatch || nameMatch) ? 'High' : 'Low';
+      let detail = matches.length > 0 ? `${matches.join('/')} 일치` : "정보 불일치";
+      if (diffs.length > 0) detail += ` (${diffs.join('/')} 상이)`;
+
+      // 렌탈 현황 참조 검사
+      const bRental = checkRentalStatus(billingRow.serial);
+      const aRental = checkRentalStatus(bestCandidate.serial);
+
+      res.json({
+        success: true,
+        candidate: {
+          _id: bestCandidate._id,
+          model: bestCandidate.model,
+          serial: bestCandidate.serial,
+          empId: bestCandidate.empId,
+          name: bestCandidate.name,
+          dept: bestCandidate.dept,
+          workplace: bestCandidate.workplace
+        },
+        score: highestScore,
+        confidence,
+        reason: detail,
+        billingRental: bRental,
+        actualRental: aRental
+      });
+    } else {
+      res.json({ success: true, candidate: null });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
 // 시리얼없음 매칭 결과 반영 및 저장 API
 // ============================================================
 app.post('/api/save-serialless', async (req, res) => {

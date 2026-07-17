@@ -1176,7 +1176,8 @@ let slState = {
   unmatchedActual: [],
   selectedPairs: new Set(), // Set of billing._id
   allBillingModels: [],
-  allActualModels: []
+  allActualModels: [],
+  exclusions: {} // Record of billingId -> array of actualIds
 };
 
 function initSeriallessMatching() {
@@ -1353,6 +1354,7 @@ function initSeriallessMatching() {
   }
 
   async function runSeriallessMatch() {
+    slState.exclusions = {};
     showLoading("시리얼없음 조건 매칭 분석 중...");
     try {
       const criteria = {
@@ -1642,6 +1644,103 @@ function renderSeriallessTables() {
           tr.classList.remove('sl-row-highlight');
         }
         updateMonitoringCounts();
+      });
+
+      // Bind doubleclick rematch event (excluding checkbox clicks)
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('dblclick', async (e) => {
+        if (e.target.type === 'checkbox' || e.target.closest('.sl-pair-item-cb')) return;
+        
+        // Clear text selections triggered by double-click
+        window.getSelection().removeAllRanges();
+        
+        const confirmMsg = `[${b.name || '사번없음'}] 청구 자산에 대한 제안된 실사 후보 [${a.name || '사번없음'}] 매칭이 마음에 들지 않으십니까?\n이 후보를 제외하고 다른 매칭 후보를 검색합니다.`;
+        if (!confirm(confirmMsg)) return;
+
+        // Initialize exclusion list if empty
+        if (!slState.exclusions[b._id]) {
+          slState.exclusions[b._id] = [];
+        }
+        slState.exclusions[b._id].push(a._id);
+
+        // Gather all other currently matched actual IDs
+        const alreadyMatchedActualIds = slState.matchedPairs
+          .filter(p => p.billing._id !== b._id)
+          .map(p => p.actual._id);
+
+        showLoading("다른 매칭 후보 검색 중...");
+        try {
+          const criteria = {
+            empid: slCbEmpid.checked,
+            name: slCbName.checked,
+            dept: slCbDept.checked,
+            workplace: slCbWorkplace.checked
+          };
+          const filters = {
+            billingModels: getCheckedModels('sl-filter-billing-model-container'),
+            billingSerial: slFilterBillingSerial.value,
+            billingModelKeyword: document.getElementById('sl-filter-billing-model-keyword') ? document.getElementById('sl-filter-billing-model-keyword').value : "",
+            actualModels: getCheckedModels('sl-filter-actual-model-container'),
+            actualModelKeyword: document.getElementById('sl-filter-actual-model-keyword') ? document.getElementById('sl-filter-actual-model-keyword').value : ""
+          };
+
+          const res = await fetch('/api/rematch-row', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              billingRow: b,
+              criteria,
+              filters,
+              alreadyMatchedActualIds,
+              excludedActualIds: slState.exclusions[b._id],
+              key1: selKey1.value,
+              key2: selKey2.value,
+              key3: selKey3.value
+            })
+          });
+          const data = await res.json();
+          hideLoading();
+
+          if (data.error) throw new Error(data.error);
+
+          if (data.candidate) {
+            // 1. Return old actual candidate back to unmatched list
+            slState.unmatchedActual.push(a);
+
+            // 2. Remove new actual candidate from unmatched list
+            slState.unmatchedActual = slState.unmatchedActual.filter(item => item._id !== data.candidate._id);
+
+            // 3. Swap inside matchedPairs list
+            const pairIdx = slState.matchedPairs.findIndex(p => p.billing._id === b._id);
+            if (pairIdx !== -1) {
+              slState.matchedPairs[pairIdx].actual = data.candidate;
+              slState.matchedPairs[pairIdx].score = data.score;
+              slState.matchedPairs[pairIdx].confidence = data.confidence;
+              slState.matchedPairs[pairIdx].reason = data.reason;
+              slState.matchedPairs[pairIdx].billingRental = data.billingRental;
+              slState.matchedPairs[pairIdx].actualRental = data.actualRental;
+            }
+
+            renderSeriallessTables();
+          } else {
+            // No candidate found
+            const cancelMatch = confirm("더 이상 조건(AND)에 만족하는 다른 실사 자산 후보가 존재하지 않습니다.\n현재 매칭을 완전히 해제하고 각각 미매칭 목록으로 되돌리시겠습니까?");
+            if (cancelMatch) {
+              // Remove pair
+              slState.matchedPairs = slState.matchedPairs.filter(p => p.billing._id !== b._id);
+              slState.selectedPairs.delete(b._id);
+
+              // Push back to unmatched lists
+              slState.unmatchedBilling.push(b);
+              slState.unmatchedActual.push(a);
+
+              renderSeriallessTables();
+            }
+          }
+        } catch (err) {
+          hideLoading();
+          alert("재매칭 오류: " + err.message);
+        }
       });
 
       tbodyPairs.appendChild(tr);
