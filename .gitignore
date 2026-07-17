@@ -1,0 +1,22 @@
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Output directory
+dist/
+build/
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env files
+.env
+.env.local
+
+# Excel temporary/data files (optional: comment out if you want to track them)
+# temp_file1.xlsx
+# temp_file2.xlsx

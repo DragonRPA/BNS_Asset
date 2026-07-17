@@ -1,0 +1,17 @@
+{
+  "name": "excel-compare-tool",
+  "version": "1.0.0",
+  "description": "제조번호 기준 엑셀 추정자료 작성 프로그램",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "xlsx": "^0.18.5"
+  },
+  "author": "Antigravity",
+  "license": "ISC"
+}
