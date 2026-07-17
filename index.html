@@ -68,6 +68,16 @@
               <input type="file" id="input-file3" accept=".xlsx, .xls" style="display: none;">
               <span id="lbl-file3" class="file-name-label">선택된 파일 없음</span>
             </div>
+            
+            <div class="file-input-group" style="display: flex; align-items: center; gap: 6px; margin-left: 0.5rem;">
+              <span class="file-type-title" style="color: #ef4444; font-weight: bold; margin-bottom: 0;">검색기준일</span>
+              <input type="text" id="input-ref-date" value="2026-03-31" style="width: 85px; padding: 0.15rem 0.3rem; font-size: 0.75rem; border: 1px solid #cbd5e1; border-radius: 4px; height: 22px; text-align: center; font-weight: bold; box-sizing: border-box; outline: none;">
+            </div>
+
+            <div class="file-input-group" style="display: flex; align-items: center; gap: 4px; margin-left: 0.5rem;">
+              <span class="file-type-title" style="color: #3b82f6; font-weight: bold; margin-bottom: 0;">미매칭 총수량</span>
+              <span id="lbl-total-unmatched-billing" style="font-size: 0.95rem; font-weight: 800; color: #3b82f6; min-width: 30px; text-align: center;">-</span>
+            </div>
           </div>
           
           <!-- Match Monitoring Dashboard (Moved from Tab 2 Row 1) -->

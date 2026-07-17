@@ -89,6 +89,14 @@ function cleanEmpId(val) {
   return String(val).trim().replace(/[^0-9]/g, '');
 }
 
+// Helper to get checked checkbox values globally
+function getCheckedModels(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return [];
+  const checked = container.querySelectorAll('input[type="checkbox"]:checked');
+  return Array.from(checked).map(cb => cb.value);
+}
+
 // Helper: Compare employee ID with zero-padding
 function compareEmpId(e1, e2) {
   const c1 = cleanEmpId(e1);
@@ -130,6 +138,23 @@ function setupEventListeners() {
 
   // Run comparison
   btnRunCompare.addEventListener('click', runCompare);
+
+  // Reference date change
+  const inputRefDate = document.getElementById('input-ref-date');
+  if (inputRefDate) {
+    inputRefDate.addEventListener('change', () => {
+      if (file1Uploaded && file2Uploaded && file3Uploaded) {
+        runCompare();
+      }
+    });
+    inputRefDate.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        if (file1Uploaded && file2Uploaded && file3Uploaded) {
+          runCompare();
+        }
+      }
+    });
+  }
 
   // Tab buttons click
   const tabButtons = document.querySelectorAll('.tab-btn');
@@ -312,10 +337,11 @@ async function runCompare() {
   }, 250);
 
   try {
+    const refDateVal = document.getElementById('input-ref-date') ? document.getElementById('input-ref-date').value.trim() : "";
     const response = await fetch('/api/compare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key1: k1, key2: k2, key3: k3 })
+      body: JSON.stringify({ key1: k1, key2: k2, key3: k3, refDate: refDateVal })
     });
 
     if (!response.ok) {
@@ -397,6 +423,12 @@ function recalculateSummary() {
   const actualPartitionSum = exactF2Count + simF2Approved + simF2Rejected + appData.unmatchedActual.length;
   const unmatchedBillingCount = appData.unmatchedBilling.length + simF2Rejected + simF3Rejected;
   const unmatchedActualCount = appData.unmatchedActual.length + simF2Rejected;
+
+  // Update total unmatched label in header
+  const lblTotalUnmatched = document.getElementById('lbl-total-unmatched-billing');
+  if (lblTotalUnmatched) {
+    lblTotalUnmatched.innerText = unmatchedBillingCount;
+  }
 
   // Use server's raw totals as the display values for Cards 1 & 2 (ground truth)
   // If raw totals are not available (shouldn't happen), fall back to partition sums
@@ -1292,8 +1324,9 @@ function initSeriallessMatching() {
     try {
       const k1 = selKey1.value;
       const k2 = selKey2.value;
+      const refDateVal = document.getElementById('input-ref-date') ? document.getElementById('input-ref-date').value.trim() : "";
       const billingSerial = slFilterBillingSerial ? slFilterBillingSerial.value : "";
-      const url = `/api/serialless-initial?key1=${encodeURIComponent(k1)}&key2=${encodeURIComponent(k2)}&billingSerial=${encodeURIComponent(billingSerial)}`;
+      const url = `/api/serialless-initial?key1=${encodeURIComponent(k1)}&key2=${encodeURIComponent(k2)}&billingSerial=${encodeURIComponent(billingSerial)}&refDate=${encodeURIComponent(refDateVal)}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.hasData) {
@@ -1345,13 +1378,7 @@ function initSeriallessMatching() {
   window.loadInitialSeriallessData = loadInitialSeriallessData;
   window.runSeriallessMatch = runSeriallessMatch;
 
-  // Helper to get checked checkbox values
-  function getCheckedModels(containerId) {
-    const container = document.getElementById(containerId);
-    if (!container) return [];
-    const checked = container.querySelectorAll('input[type="checkbox"]:checked');
-    return Array.from(checked).map(cb => cb.value);
-  }
+
 
   async function runSeriallessMatch() {
     slState.exclusions = {};
@@ -1371,6 +1398,7 @@ function initSeriallessMatching() {
         actualModelKeyword: document.getElementById('sl-filter-actual-model-keyword') ? document.getElementById('sl-filter-actual-model-keyword').value : ""
       };
 
+      const refDateVal = document.getElementById('input-ref-date') ? document.getElementById('input-ref-date').value.trim() : "";
       const res = await fetch('/api/match-serialless', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1379,7 +1407,8 @@ function initSeriallessMatching() {
           filters,
           key1: selKey1.value,
           key2: selKey2.value,
-          key3: selKey3.value
+          key3: selKey3.value,
+          refDate: refDateVal
         })
       });
       const data = await res.json();
@@ -1589,6 +1618,15 @@ function renderSeriallessTables() {
       const deptMismatch = b.dept.trim() !== a.dept.trim() ? 'sl-mismatch' : '';
       const workplaceMismatch = b.workplace.trim() !== a.workplace.trim() ? 'sl-mismatch' : '';
 
+      // Highlight differences if both have serials
+      let serialHtmlB = b.serial || '(시리얼없음)';
+      let serialHtmlA = a.serial || '(시리얼없음)';
+      if (b.serial && a.serial) {
+        const { htmlA, htmlB } = alignSerials(b.serial, a.serial);
+        serialHtmlB = htmlA;
+        serialHtmlA = htmlB;
+      }
+
       const tr = document.createElement('tr');
       if (isChecked) tr.classList.add('sl-row-highlight');
       tr.innerHTML = `
@@ -1604,7 +1642,7 @@ function renderSeriallessTables() {
             </div>
             <div style="text-align: right; min-width: 140px;">
               <div style="font-weight: 500; font-size:0.75rem; color:#1a202c;">${b.model}</div>
-              <div class="serial-highlight" style="font-size:0.72rem; font-family:monospace; color:#4f46e5; font-weight:600; margin-top:2px;">${b.serial || '(시리얼없음)'}</div>
+              <div class="serial-highlight" style="font-size:0.72rem; font-family:monospace; color:#4f46e5; font-weight:600; margin-top:2px;">${serialHtmlB}</div>
               <span class="sl-ref-subtext" style="color: ${pair.billingRental.status === '일치' ? '#16a34a' : (pair.billingRental.status === '유사' ? '#d97706' : '#718096')}; font-size:0.65rem; margin-top:2px;">
                 ● ${pair.billingRental.detail || '렌탈 미일치'}
               </span>
@@ -1624,7 +1662,7 @@ function renderSeriallessTables() {
             </div>
             <div style="text-align: right; min-width: 140px;">
               <div style="font-weight: 500; font-size:0.75rem; color:#1a202c;">${a.model}</div>
-              <div class="serial-highlight" style="font-size:0.72rem; font-family:monospace; color:#0d9488; font-weight:600; margin-top:2px;">${a.serial || '(시리얼없음)'}</div>
+              <div class="serial-highlight" style="font-size:0.72rem; font-family:monospace; color:#0d9488; font-weight:600; margin-top:2px;">${serialHtmlA}</div>
               <span class="sl-ref-subtext" style="color: ${pair.actualRental.status === '일치' ? '#16a34a' : (pair.actualRental.status === '유사' ? '#d97706' : '#718096')}; font-size:0.65rem; margin-top:2px;">
                 ● ${pair.actualRental.detail || '렌탈 미일치'}
               </span>
@@ -1684,6 +1722,7 @@ function renderSeriallessTables() {
             actualModelKeyword: document.getElementById('sl-filter-actual-model-keyword') ? document.getElementById('sl-filter-actual-model-keyword').value : ""
           };
 
+          const refDateVal = document.getElementById('input-ref-date') ? document.getElementById('input-ref-date').value.trim() : "";
           const res = await fetch('/api/rematch-row', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1695,7 +1734,8 @@ function renderSeriallessTables() {
               excludedActualIds: slState.exclusions[b._id],
               key1: selKey1.value,
               key2: selKey2.value,
-              key3: selKey3.value
+              key3: selKey3.value,
+              refDate: refDateVal
             })
           });
           const data = await res.json();

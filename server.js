@@ -78,6 +78,30 @@ function compareEmpId(e1, e2) {
   return c1.padStart(maxLen, '0') === c2.padStart(maxLen, '0');
 }
 
+// Helper: Parse various excel and string date formats safely
+function parseExcelDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val === 'number') {
+    return new Date((val - 25569) * 86400 * 1000);
+  }
+  const str = String(val).trim();
+  if (!str) return null;
+
+  const cleaned = str.replace(/[^0-9]/g, '');
+  if (cleaned.length === 8) {
+    const y = parseInt(cleaned.substring(0, 4), 10);
+    const m = parseInt(cleaned.substring(4, 6), 10) - 1;
+    const d = parseInt(cleaned.substring(6, 8), 10);
+    return new Date(y, m, d);
+  }
+
+  const parsed = Date.parse(str);
+  if (!isNaN(parsed)) {
+    return new Date(parsed);
+  }
+  return null;
+}
+
 // Levenshtein distance
 function getLevenshteinDistance(a, b) {
   if (a.length === 0) return b.length;
@@ -220,7 +244,7 @@ app.get('/api/compare-progress', (req, res) => {
 // Compare Route
 // ============================================================
 app.post('/api/compare', async (req, res) => {
-  const { key1, key2, key3 } = req.body;
+  const { key1, key2, key3, refDate } = req.body;
   writeConfig({ key1, key2, key3 });
 
   const config = readConfig();
@@ -245,19 +269,36 @@ app.post('/api/compare', async (req, res) => {
     const sheetName3 = wb3.SheetNames.includes('렌탈사현황') ? '렌탈사현황' : wb3.SheetNames[0];
     const rows3 = XLSX.utils.sheet_to_json(wb3.Sheets[sheetName3], { defval: "" });
 
-    const billingData = rows1.map((row, idx) => ({
+    // 1. 청구 데이터 로드 및 날짜 필터 적용
+    const rawBillingData = rows1.map((row, idx) => ({
       _id: `b_${idx}`, idx: idx + 2,
       name: row['이름'] || row['사용자'] || row['성명'] || "",
       empId: row['사번'] || row['사원번호'] || "",
       dept: row['부서'] || row['소속'] || "",
       workplace: row['사업장'] || "",
       device: row['지급기기'] || row['구분'] || row['기기'] || "",
-      model: row['관리모델'] || row['상세모델'] || row['모델명'] || row['모델'] || "",
+      model: row['상세모델'] || row['모델명'] || row['모델'] || "",
       serial: String(row[key1] || "").trim(),
       cleanSerial: cleanSerial(row[key1]),
       originalRow: row
     }));
 
+    const parsedRef = parseExcelDate(refDate);
+    const excludedSerials = new Set();
+    let billingData = rawBillingData;
+
+    if (parsedRef) {
+      billingData = rawBillingData.filter(b => {
+        const cDate = parseExcelDate(b.originalRow['렌탈 시작일자'] || b.originalRow['렌탈시작일'] || b.originalRow['계약시작일'] || b.originalRow['계약일'] || b.originalRow['시작일']);
+        const isIncluded = cDate !== null && cDate <= parsedRef;
+        if (!isIncluded && b.cleanSerial) {
+          excludedSerials.add(b.cleanSerial);
+        }
+        return isIncluded;
+      });
+    }
+
+    // 2. 실사 데이터 로드 및 한화 제외 + 제외 시리얼 필터 적용
     const actualData = rows2.map((row, idx) => ({
       _id: `a_${idx}`, idx: idx + 2,
       name: row['이름'] || row['사용자'] || row['성명'] || "",
@@ -269,11 +310,22 @@ app.post('/api/compare', async (req, res) => {
       serial: String(row[key2] || "").trim(),
       cleanSerial: cleanSerial(row[key2]),
       originalRow: row
-    }));
+    })).filter(row => {
+      // 실사 데이터에서 "자산소유" 컬럼의 값이 "한화" 인것을 제외
+      const ownership = row.originalRow['자산소유'] ? String(row.originalRow['자산소유']).trim() : '';
+      if (ownership === '한화') return false;
 
+      // 검색기준일 필터로 제외된 청구 시리얼과 일치하는 실사 자산도 제외
+      if (row.cleanSerial && excludedSerials.has(row.cleanSerial)) {
+        return false;
+      }
+      return true;
+    });
+
+    // 3. 렌탈사 데이터 로드 및 제외 시리얼 필터 적용
     const rentalData = rows3.map((row, idx) => ({
       _id: `r_${idx}`, idx: idx + 2,
-      name: row['이름'] || row['사용자'] || row['성명'] || "", // Do not default to '최종 수요처' here to avoid matching name against address
+      name: row['이름'] || row['사용자'] || row['성명'] || "", 
       empId: row['사번'] || row['사원번호'] || "",
       dept: row['부서'] || row['소속'] || "",
       workplace: row['사업장'] || "",
@@ -282,7 +334,13 @@ app.post('/api/compare', async (req, res) => {
       serial: String(row[key3] || "").trim(),
       cleanSerial: cleanSerial(row[key3]),
       originalRow: row
-    }));
+    })).filter(row => {
+      // 검색기준일 필터로 제외된 청구 시리얼과 일치하는 렌탈 자산 제외
+      if (row.cleanSerial && excludedSerials.has(row.cleanSerial)) {
+        return false;
+      }
+      return true;
+    });
 
     const exactMatches = [];
     const similarMatches = [];
@@ -695,19 +753,46 @@ app.get('/api/serialless-initial', async (req, res) => {
     const k1 = req.query.key1 || config.key1;
     const k2 = req.query.key2 || config.key2;
 
-    const billingData = rows1.map((row, idx) => ({
+    const rawBillingData = rows1.map((row, idx) => ({
       _id: `b_${idx}`,
-      model: String(row['관리모델'] || row['상세모델'] || row['모델명'] || row['모델'] || ""),
+      model: String(row['상세모델'] || row['모델명'] || row['모델'] || ""),
       serial: String(row[k1] || "").trim(),
-      cleanSerial: cleanSerial(row[k1])
+      cleanSerial: cleanSerial(row[k1]),
+      originalRow: row
     }));
+
+    const parsedRef = parseExcelDate(req.query.refDate);
+    const excludedSerials = new Set();
+    let billingData = rawBillingData;
+
+    if (parsedRef) {
+      billingData = rawBillingData.filter(b => {
+        const cDate = parseExcelDate(b.originalRow['렌탈 시작일자'] || b.originalRow['렌탈시작일'] || b.originalRow['계약시작일'] || b.originalRow['계약일'] || b.originalRow['시작일']);
+        const isIncluded = cDate !== null && cDate <= parsedRef;
+        if (!isIncluded && b.cleanSerial) {
+          excludedSerials.add(b.cleanSerial);
+        }
+        return isIncluded;
+      });
+    }
 
     const actualData = rows2.map((row, idx) => ({
       _id: `a_${idx}`,
       model: String(row['상세모델'] || row['모델명'] || row['모델'] || ""),
       serial: String(row[k2] || "").trim(),
-      cleanSerial: cleanSerial(row[k2])
-    }));
+      cleanSerial: cleanSerial(row[k2]),
+      originalRow: row
+    })).filter(row => {
+      // 실사 데이터에서 "자산소유" 컬럼의 값이 "한화" 인것을 제외
+      const ownership = row.originalRow['자산소유'] ? String(row.originalRow['자산소유']).trim() : '';
+      if (ownership === '한화') return false;
+
+      // 검색기준일 필터로 제외된 청구 시리얼과 일치하는 실사 자산도 제외
+      if (row.cleanSerial && excludedSerials.has(row.cleanSerial)) {
+        return false;
+      }
+      return true;
+    });
 
     const exactBillingIds = new Set();
     const exactActualIds = new Set();
@@ -764,7 +849,7 @@ app.get('/api/serialless-initial', async (req, res) => {
 // 시리얼없음 매칭 API
 // ============================================================
 app.post('/api/match-serialless', async (req, res) => {
-  const { criteria, filters, key1, key2, key3 } = req.body;
+  const { criteria, filters, key1, key2, key3, refDate } = req.body;
   const config = readConfig();
   
   const f1Path = fs.existsSync(config.file1Path) ? config.file1Path : FILE1_PATH;
@@ -788,18 +873,33 @@ app.post('/api/match-serialless', async (req, res) => {
       rows3 = XLSX.utils.sheet_to_json(wb3.Sheets[sheetName3], { defval: "" });
     }
 
-    const billingData = rows1.map((row, idx) => ({
+    const rawBillingData = rows1.map((row, idx) => ({
       _id: `b_${idx}`, idx: idx + 2,
       name: String(row['이름'] || row['사용자'] || row['성명'] || ""),
       empId: String(row['사번'] || row['사원번호'] || ""),
       dept: String(row['부서'] || row['소속'] || ""),
       workplace: String(row['사업장'] || ""),
       device: String(row['지급기기'] || row['구분'] || row['기기'] || ""),
-      model: String(row['관리모델'] || row['상세모델'] || row['모델명'] || row['모델'] || ""),
+      model: String(row['상세모델'] || row['모델명'] || row['모델'] || ""),
       serial: String(row[key1 || config.key1] || "").trim(),
       cleanSerial: cleanSerial(row[key1 || config.key1]),
       originalRow: row
     }));
+
+    const parsedRef = parseExcelDate(refDate);
+    const excludedSerials = new Set();
+    let billingData = rawBillingData;
+
+    if (parsedRef) {
+      billingData = rawBillingData.filter(b => {
+        const cDate = parseExcelDate(b.originalRow['렌탈 시작일자'] || b.originalRow['렌탈시작일'] || b.originalRow['계약시작일'] || b.originalRow['계약일'] || b.originalRow['시작일']);
+        const isIncluded = cDate !== null && cDate <= parsedRef;
+        if (!isIncluded && b.cleanSerial) {
+          excludedSerials.add(b.cleanSerial);
+        }
+        return isIncluded;
+      });
+    }
 
     const actualData = rows2.map((row, idx) => ({
       _id: `a_${idx}`, idx: idx + 2,
@@ -812,7 +912,17 @@ app.post('/api/match-serialless', async (req, res) => {
       serial: String(row[key2 || config.key2] || "").trim(),
       cleanSerial: cleanSerial(row[key2 || config.key2]),
       originalRow: row
-    }));
+    })).filter(row => {
+      // 실사 데이터에서 "자산소유" 컬럼의 값이 "한화" 인것을 제외
+      const ownership = row.originalRow['자산소유'] ? String(row.originalRow['자산소유']).trim() : '';
+      if (ownership === '한화') return false;
+
+      // 검색기준일 필터로 제외된 청구 시리얼과 일치하는 실사 자산도 제외
+      if (row.cleanSerial && excludedSerials.has(row.cleanSerial)) {
+        return false;
+      }
+      return true;
+    });
 
     const rentalData = rows3.map((row, idx) => ({
       _id: `r_${idx}`, idx: idx + 2,
@@ -823,7 +933,13 @@ app.post('/api/match-serialless', async (req, res) => {
       serial: String(row[key3 || config.key3] || "").trim(),
       cleanSerial: cleanSerial(row[key3 || config.key3]),
       originalRow: row
-    }));
+    })).filter(row => {
+      // 검색기준일 필터로 제외된 청구 시리얼과 일치하는 렌탈 자산 제외
+      if (row.cleanSerial && excludedSerials.has(row.cleanSerial)) {
+        return false;
+      }
+      return true;
+    });
 
     // 1. 제조번호가 동일한 완전일치 데이터 제외 (사용자 요청: 제조번호 일치 건은 화면 표시 제외)
     const exactBillingIds = new Set();
@@ -942,6 +1058,14 @@ app.post('/api/match-serialless', async (req, res) => {
           if (criteria.dept && !deptMatch) isMatched = false;
           if (criteria.workplace && !workplaceMatch) isMatched = false;
 
+          // 제조번호 유사도 검사 및 3글자 이상 차이 시 제외
+          if (bRow.cleanSerial && aRow.cleanSerial) {
+            const dist = getLevenshteinDistance(bRow.cleanSerial, aRow.cleanSerial);
+            if (dist >= 3) {
+              isMatched = false;
+            }
+          }
+
           // 필수 조건(AND) 만족 시, 최적의 유사 후보 결정을 위한 스코어 연산 (체크 여부 무관)
           if (isMatched) {
             let score = 0;
@@ -1022,9 +1146,11 @@ app.post('/api/match-serialless', async (req, res) => {
 // 시리얼없음 개별 행 재매칭 API
 // ============================================================
 app.post('/api/rematch-row', async (req, res) => {
-  const { billingRow, criteria, filters, alreadyMatchedActualIds, excludedActualIds, key1, key2, key3 } = req.body;
+  const { billingRow, criteria, filters, alreadyMatchedActualIds, excludedActualIds, key1, key2, key3, refDate } = req.body;
   const config = readConfig();
+  const f1Path = fs.existsSync(config.file1Path) ? config.file1Path : FILE1_PATH;
   const f2Path = fs.existsSync(config.file2Path) ? config.file2Path : FILE2_PATH;
+  const f3Path = fs.existsSync(config.file3Path) ? config.file3Path : FILE3_PATH;
 
   if (!fs.existsSync(f2Path)) {
     return res.status(400).json({ error: '실사 데이터 파일이 존재하지 않습니다.' });
@@ -1032,6 +1158,29 @@ app.post('/api/rematch-row', async (req, res) => {
 
   try {
     const XLSX = require('xlsx');
+    
+    // 1. 청구 데이터 로드하여 제외 시리얼 집계
+    const excludedSerials = new Set();
+    if (fs.existsSync(f1Path)) {
+      const wb1 = XLSX.readFile(f1Path);
+      const rows1 = XLSX.utils.sheet_to_json(wb1.Sheets[wb1.SheetNames[0]], { defval: "" });
+      const k1 = key1 || config.key1;
+      const rawBillingData = rows1.map((row, idx) => ({
+        cleanSerial: cleanSerial(row[k1]),
+        originalRow: row
+      }));
+      const parsedRef = parseExcelDate(refDate);
+      if (parsedRef) {
+        rawBillingData.forEach(b => {
+          const cDate = parseExcelDate(b.originalRow['렌탈 시작일자'] || b.originalRow['렌탈시작일'] || b.originalRow['계약시작일'] || b.originalRow['계약일'] || b.originalRow['시작일']);
+          const isIncluded = cDate !== null && cDate <= parsedRef;
+          if (!isIncluded && b.cleanSerial) {
+            excludedSerials.add(b.cleanSerial);
+          }
+        });
+      }
+    }
+
     const wb2 = XLSX.readFile(f2Path);
     const rows2 = XLSX.utils.sheet_to_json(wb2.Sheets[wb2.SheetNames[0]], { defval: "" });
     const k2 = key2 || config.key2;
@@ -1046,7 +1195,76 @@ app.post('/api/rematch-row', async (req, res) => {
       dept: String(row['부서'] || row['사용부서'] || ""),
       workplace: String(row['사업장'] || row['근무지'] || ""),
       originalRow: row
-    }));
+    })).filter(row => {
+      // 실사 데이터에서 "자산소유" 컬럼의 값이 "한화" 인것을 제외
+      const ownership = row.originalRow['자산소유'] ? String(row.originalRow['자산소유']).trim() : '';
+      if (ownership === '한화') return false;
+
+      // 검색기준일 필터로 제외된 청구 시리얼과 일치하는 실사 자산 제외
+      if (row.cleanSerial && excludedSerials.has(row.cleanSerial)) {
+        return false;
+      }
+      return true;
+    });
+
+    // 렌탈사 데이터 로드 및 lookup 작성
+    let rows3 = [];
+    if (fs.existsSync(f3Path)) {
+      const wb3 = XLSX.readFile(f3Path);
+      const sheetName3 = wb3.SheetNames.includes('렌탈사현황') ? '렌탈사현황' : wb3.SheetNames[0];
+      rows3 = XLSX.utils.sheet_to_json(wb3.Sheets[sheetName3], { defval: "" });
+    }
+
+    const rentalData = rows3.map((row, idx) => ({
+      _id: `r_${idx}`, idx: idx + 2,
+      name: String(row['이름'] || row['사용자'] || row['성명'] || ""),
+      empId: String(row['사번'] || row['사원번호'] || ""),
+      dept: String(row['부서'] || row['소속'] || ""),
+      workplace: String(row['사업장'] || ""),
+      serial: String(row[key3 || config.key3] || "").trim(),
+      cleanSerial: cleanSerial(row[key3 || config.key3]),
+      originalRow: row
+    })).filter(row => {
+      // 검색기준일 필터로 제외된 청구 시리얼과 일치하는 렌탈 자산 제외
+      if (row.cleanSerial && excludedSerials.has(row.cleanSerial)) {
+        return false;
+      }
+      return true;
+    });
+
+    const rentalLookup = new Map();
+    rentalData.forEach(r => {
+      if (r.cleanSerial) {
+        rentalLookup.set(r.cleanSerial, r);
+      }
+    });
+
+    const rentalLookupKeys = Array.from(rentalLookup.keys());
+
+    function checkRentalStatus(serialStr) {
+      if (!serialStr) return { status: '없음', detail: '' };
+      const cSer = cleanSerial(serialStr);
+      if (!cSer) return { status: '없음', detail: '' };
+      
+      if (rentalLookup.has(cSer)) {
+        const match = rentalLookup.get(cSer);
+        const assetNo = match.originalRow['관리번호'] || match.originalRow['자산번호'] || '';
+        return { status: '일치', detail: `렌탈 일치${assetNo ? `(${assetNo})` : ''}` };
+      }
+
+      for (let i = 0; i < rentalLookupKeys.length; i++) {
+        const rClean = rentalLookupKeys[i];
+        if (Math.abs(rClean.length - cSer.length) <= 1) {
+          if (getLevenshteinDistance(cSer, rClean) <= 1) {
+            const rRow = rentalLookup.get(rClean);
+            const assetNo = rRow.originalRow['관리번호'] || rRow.originalRow['자산번호'] || '';
+            return { status: '유사', detail: `렌탈 유사: ${rRow.serial}${assetNo ? `(${assetNo})` : ''}` };
+          }
+        }
+      }
+
+      return { status: '미검출', detail: '렌탈 미일치' };
+    }
 
     // 1. 이미 매칭되었거나 사용자가 거절한(더블클릭한) 실사 ID 제외
     const ignoreActualIds = new Set([
@@ -1083,6 +1301,14 @@ app.post('/api/rematch-row', async (req, res) => {
       if (criteria.name && !nameMatch) isMatched = false;
       if (criteria.dept && !deptMatch) isMatched = false;
       if (criteria.workplace && !workplaceMatch) isMatched = false;
+
+      // 제조번호 유사도 검사 및 3글자 이상 차이 시 제외
+      if (billingRow.cleanSerial && aRow.cleanSerial) {
+        const dist = getLevenshteinDistance(billingRow.cleanSerial, aRow.cleanSerial);
+        if (dist >= 3) {
+          isMatched = false;
+        }
+      }
 
       if (isMatched) {
         let score = 0;
